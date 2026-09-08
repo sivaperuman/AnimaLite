@@ -57,6 +57,12 @@ _POLL_SECONDS = 0.02
 #: measured, `timeout=0.3, grace=1.0` returned at 1.310 s.
 TEARDOWN_BUDGET_SECONDS = 5.0
 
+#: Bounded allowance for collecting the exit status of a process that has
+#: already been SIGKILLed, so a killed child is not left as a zombie when the
+#: teardown budget is spent. It buys a dead process no time; see the note in
+#: :meth:`ManagedProcess.terminate_tree`.
+_REAP_AFTER_KILL_SECONDS = 0.5
+
 
 class ProcessFailure(Exception):
     """A child operation that ended badly, carrying its cleanup evidence.
@@ -152,8 +158,13 @@ class ManagedProcess:
         cancel: Callable[[], bool] | None = None,
     ) -> None:
         self.argv = list(argv)
-        #: Total teardown budget, spent once across TERM, KILL, reap and sweep.
+        #: Total teardown budget, spent once across TERM, KILL, reap and sweep
+        #: *for the whole process lifecycle* -- see :attr:`_teardown_deadline`.
         self.grace_seconds = grace_seconds
+        #: Set by the first teardown and reused by every later one. Without it a
+        #: timeout path calling terminate_tree() followed by close() from the
+        #: context manager spent the budget twice: measured 0.200 s then 0.401 s.
+        self._teardown_deadline: float | None = None
         #: Checked inside every blocking operation. Without it a cancel request
         #: cannot reach a write parked in the kernel or a wait on a stalled
         #: child: measured, a cancel at 0.30s was only observed at 3.01s, when
@@ -306,12 +317,15 @@ class ManagedProcess:
         SIGKILLed unconditionally and probed, and any survivor is reported in
         :attr:`survivors` rather than silently ignored.
 
-        ``grace_seconds`` is the **total** teardown budget, spent once across
-        every phase below. It used to start a fresh window per phase, so a
-        stubborn child could consume it several times over: measured,
-        ``timeout=0.3, grace=1.0`` returned at 1.310 s.
+        ``grace_seconds`` is the **total** teardown budget for this process's
+        whole lifecycle, not per phase and not per call. It used to start a fresh
+        window per phase, and then a fresh window per call -- a timeout path runs
+        ``terminate_tree()`` and the context manager then runs ``close()``, so
+        one lifecycle spent the budget twice (measured 0.200 s, then 0.401 s).
         """
-        budget = time.monotonic() + self.grace_seconds
+        if self._teardown_deadline is None:
+            self._teardown_deadline = time.monotonic() + self.grace_seconds
+        budget = self._teardown_deadline
 
         def left() -> float:
             return max(0.0, budget - time.monotonic())
@@ -322,8 +336,16 @@ class ManagedProcess:
                 time.sleep(min(0.02, left()))
             if self.process.poll() is None:
                 self._signal_group(signal.SIGKILL)
+                # Reaping after SIGKILL is bookkeeping, not waiting for
+                # cooperation: SIGKILL cannot be caught, so `waitpid` returns as
+                # soon as the kernel finishes tearing the process down. This is
+                # NOT the reap floor that made the deadline non-authoritative --
+                # that one let a *still-running* process be reported as a
+                # success. Here the process is already dead, and skipping the
+                # reap only leaves a zombie behind. Bounded, and not spendable
+                # again: a later call finds `poll()` non-None and skips it.
                 with contextlib.suppress(subprocess.TimeoutExpired):
-                    self.process.wait(timeout=left())
+                    self.process.wait(timeout=max(left(), _REAP_AFTER_KILL_SECONDS))
 
         if self._group_id is None:
             return
@@ -331,7 +353,11 @@ class ManagedProcess:
         self._signal_group(signal.SIGKILL)
         while True:
             if not self._group_alive():
-                self.survivors = []
+                # A later call must not erase evidence an earlier one
+                # established: the leak happened, whatever the group looks like
+                # by the time cleanup runs again.
+                if not self.survivors:
+                    self.survivors = []
                 return
             if left() <= 0:
                 break

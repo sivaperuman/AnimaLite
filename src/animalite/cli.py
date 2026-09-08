@@ -419,7 +419,8 @@ def _tools(args: argparse.Namespace) -> FFmpegTools | None:
     warm run of the same plan while both reported success.
     """
     envelope = _envelope(args)
-    if envelope is None or envelope.expected_tools is None:
+    if envelope is None:
+        # Ordinary CLI use discovers normally; only an envelope binds tools.
         return None
     resolved = FFmpegTools.discover().with_content_hashes()
     if not resolved.available:

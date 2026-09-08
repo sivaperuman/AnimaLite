@@ -41,8 +41,8 @@ Resolved exactly the pinned set: `animalite 0.1.0`, `pydantic 2.13.5`,
 | `ruff check --no-cache .` | `All checks passed!` — exit 0 |
 | `ruff format --no-cache --check .` | `85 files already formatted` — exit 0 |
 | `mypy` (with `.mypy_cache` removed) | `Success: no issues found in 57 source files` — exit 0 (strict mode for `src/`) |
-| `python -m pytest -m "not slow" -q -p no:cacheprovider` | `183 passed, 37 deselected in 58.32s` — exit 0 |
-| `python -m pytest -q -p no:cacheprovider` | `220 passed in 140.11s` — exit 0 |
+| `python -m pytest -m "not slow" -q -p no:cacheprovider` | `185 passed, 41 deselected in 60.85s` — exit 0 |
+| `python -m pytest -q -p no:cacheprovider` | `226 passed in 148.51s` — exit 0 |
 
 > **Why the caches are disabled here.** The first CI run failed on `ruff check`
 > with four `I001` import-order findings that a local `ruff check .` had just
@@ -233,6 +233,34 @@ The two regressions share a shape worth naming: each was an *allowance* added to
 make a fix comfortable — a reap floor so a just-finished child would not be
 called a timeout, a teardown grace so cleanup had room — and each quietly
 re-opened the guarantee it sat beside.
+
+## 8d. Fourth-round repairs (R3, R4) — before and after
+
+Reproduced on `2917cbe` before fixing. The reviewer's measured figures
+reproduced to the digit (`0.200` / `0.401`, and the accepted `succeeded` run
+under `/usr/bin/ffmpeg`).
+
+| Behaviour | Before | After |
+| --- | --- | --- |
+| Unavailable tool pair in the parent, host FFmpeg still on `PATH` | cold run **`succeeded`**, having executed `/usr/bin/ffmpeg` — the contract switched itself off | `failed`, `category=tool_unavailable`, **no child launched** |
+| Two **absent** content hashes compared | `mismatches() == []`, i.e. treated as equal | 2 problems, both "the executable identity is unverified and cannot be accepted" |
+| Warm-run tool identity | recorded with **no content hash** | hashed, identical to the cold identity |
+| `terminate_tree()` then `close()`, budget 0.2 s | **0.200 s**, then **0.401 s** — the budget restarted per call | 0.201 s, then **0.202 s** |
+| Encoder that consumed every frame then hung | the final wait renewed 100 ms via `max(0.1, …)` | times out, tears down, publishes nothing |
+| Injected `ProcessTimeout(pid=424242, survivors=(777,))` at the cold boundary | `cold_process_evidence=None`, `cleanup_survivor_groups=[]` | `child_pid=424242`, `child_survivor_groups=[777]`, `cleanup_survivor_groups=[777]` |
+
+### A correction our own tests caught
+
+Making the teardown budget lifecycle-scoped first left a **zombie child**: with
+the budget spent, the post-`SIGKILL` `wait()` got zero seconds, so the process
+was killed but never reaped and still showed under `pgrep -P`.
+`test_a_job_timeout_kills_the_encoder_and_leaves_no_orphan` failed and named it.
+
+Reaping after `SIGKILL` now has its own small bounded allowance. That is **not**
+the reap floor R4.1 removed: that floor let a *still-running* process be reported
+as a success, whereas `SIGKILL` cannot be caught — the process is already dead
+and `waitpid` is collecting a corpse. Skipping it buys nothing and leaves a
+zombie.
 
 ## 9. Benchmark harness against the fixtures
 

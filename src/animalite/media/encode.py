@@ -166,7 +166,20 @@ def encode_delivery_stream(
                 proc.write(frame, deadline=deadline)
                 written += 1
             proc.close_stdin()
-            code = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+            # No renewed allowance here either: an encoder that consumed every
+            # frame and then hangs past the deadline is over the deadline. The
+            # old `max(0.1, ...)` handed it another 100 ms.
+            left = deadline - time.monotonic()
+            if left <= 0:
+                proc.terminate_tree()
+                raise JobTimeoutError(
+                    f"job deadline of {timeout_seconds:.3f}s expired after all "
+                    f"{written} delivery frames were written but before the encoder "
+                    "exited; its process group was torn down and no output was "
+                    "published",
+                    survivors=tuple(proc.survivors),
+                )
+            code = proc.wait(timeout=left)
         except subprocess.TimeoutExpired as exc:
             raise JobTimeoutError(
                 f"the encoder did not exit within the remaining job deadline "

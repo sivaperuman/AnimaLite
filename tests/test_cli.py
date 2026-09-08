@@ -146,11 +146,12 @@ def test_render_writes_a_labelled_manifest(tmp_path, capsys):
 # --- R3 regression: the execution envelope carries and re-checks identity ----
 
 
-def _envelope_payload(tmp_path, *, profile=None, digest=None):
+def _envelope_payload(tmp_path, *, profile=None, digest=None, tools=None):
     from animalite.adapters.registry import default_registry
     from animalite.contracts.base import content_digest
     from animalite.contracts.job import ExecutionEnvelope
     from animalite.contracts.media import P_L_FINAL_OUTPUT
+    from animalite.media.ffmpeg import FFmpegTools
     from tests.conftest import make_request, synthetic_anchor
 
     resolved = profile or default_registry().profile("fixture-synthetic")
@@ -165,6 +166,7 @@ def _envelope_payload(tmp_path, *, profile=None, digest=None):
         request=make_request(anchors, output=P_L_FINAL_OUTPUT),
         profile=resolved,
         profile_digest=digest or content_digest(resolved),
+        expected_tools=(tools or FFmpegTools.discover().with_content_hashes()).selection(),
     )
     path = tmp_path / "envelope.json"
     path.write_text(envelope.model_dump_json(indent=2), encoding="utf-8")

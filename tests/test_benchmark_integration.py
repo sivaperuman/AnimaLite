@@ -531,19 +531,18 @@ def test_an_explicitly_selected_tool_pair_round_trips_to_the_cold_child(
     warm = [r for r in ledger.records() if r.kind is RunKind.WARM_FINAL]
     assert cold and warm
 
+    selected = tools.with_content_hashes().selection()
     for record in cold + warm:
         assert record.outcome is RunOutcome.SUCCEEDED, record.failure
         assert record.environment is not None
         executed = record.environment.media_tools
         assert executed is not None, "every run must record the tools it executed with"
-        assert not tools.selection().mismatches(
-            executed.model_copy(
-                update={
-                    "ffmpeg": executed.ffmpeg.model_copy(update={"content_hash": None}),
-                    "ffprobe": executed.ffprobe.model_copy(update={"content_hash": None}),
-                }
-            )
-        ), f"{record.run_id} ran different tools than were selected"
+        assert executed.ffmpeg.content_hash and executed.ffprobe.content_hash, (
+            f"{record.run_id} recorded no executable content hash, so its tools are unverified"
+        )
+        assert not selected.mismatches(executed), (
+            f"{record.run_id} ran different tools than were selected"
+        )
 
 
 def test_a_cold_child_running_different_tools_is_not_a_successful_run(
@@ -659,3 +658,94 @@ def test_a_cold_run_that_leaks_a_process_group_is_not_successful(
     assert record.wall_seconds is None
     assert 555001 in record.cleanup_survivor_groups, "survivors must reach the ledger"
     assert [r for r in ledger.records() if 555001 in r.cleanup_survivor_groups]
+
+
+# --- R3/R4 round 4: the tool contract is mandatory, evidence survives timeout -
+
+
+def test_a_parent_without_usable_tools_launches_no_cold_child(tmp_path, fixture_dataset):
+    """R3: the contract used to switch itself off when the parent had no pair.
+
+    Measured before: with an unavailable pair injected into the parent and host
+    FFmpeg still on PATH, the cold run reported `succeeded` having executed
+    `/usr/bin/ffmpeg` — the same class of configuration substitution R3 exists
+    to prevent.
+    """
+    from animalite.contracts.host import ToolIdentity
+    from animalite.media.ffmpeg import FFmpegTools
+
+    unusable = FFmpegTools(
+        ffmpeg=ToolIdentity(name="ffmpeg", available=False, error="injected"),
+        ffprobe=ToolIdentity(name="ffprobe", available=False, error="injected"),
+    )
+    plan, _ledger, runner = _cold_only(tmp_path, fixture_dataset, tools=unusable)
+    planned = sorted(plan.planned_runs, key=lambda r: r.order_index)[0]
+    record = runner.run_one(plan, planned)
+
+    assert record.outcome is not RunOutcome.SUCCEEDED
+    assert record.failure is not None
+    assert record.failure.category is FailureCategory.TOOL_UNAVAILABLE
+    assert record.wall_seconds is None
+    assert record.environment is None or record.environment.media_tools is None, (
+        "no child should have been launched, so nothing should have executed"
+    )
+
+
+def test_two_absent_content_hashes_are_not_a_match():
+    """R3: unverified is not equal. Two missing hashes are two unknown binaries."""
+    from animalite.contracts.host import ToolIdentity
+    from animalite.contracts.job import MediaToolSelection
+
+    bare = MediaToolSelection(
+        ffmpeg=ToolIdentity(name="ffmpeg", available=True, path="/usr/bin/ffmpeg"),
+        ffprobe=ToolIdentity(name="ffprobe", available=True, path="/usr/bin/ffprobe"),
+    )
+    problems = bare.mismatches(bare)
+    assert problems, "both hashes absent must not compare equal"
+    assert all("unverified" in p for p in problems)
+
+
+def test_a_structured_outer_timeout_keeps_its_pid_and_survivors(
+    tmp_path, fixture_dataset, monkeypatch
+):
+    """R4.3: the cold timeout path caught the exception but dropped its fields.
+
+    Measured before: an injected `ProcessTimeout(pid=424242, survivors=(777,))`
+    produced `cold_process_evidence=None` and `cleanup_survivor_groups=[]`.
+    """
+    import animalite.bench.runner as runner_module
+    from animalite.proc import ProcessTimeout
+
+    def structured_timeout(*_args, **_kwargs):
+        raise ProcessTimeout("injected", pid=424242, elapsed_seconds=1.0, survivors=(777,))
+
+    plan, _ledger, runner = _cold_only(tmp_path, fixture_dataset)
+    planned = sorted(plan.planned_runs, key=lambda r: r.order_index)[0]
+    monkeypatch.setattr(runner_module, "run_capture", structured_timeout)
+    record = runner.run_one(plan, planned)
+
+    assert record.outcome is RunOutcome.TIMEOUT
+    assert record.cold_process_evidence is not None
+    assert record.cold_process_evidence.child_pid == 424242
+    assert record.cold_process_evidence.child_survivor_groups == [777]
+    assert record.cleanup_survivor_groups == [777]
+
+
+def test_a_plain_timeout_records_what_it_knows_without_inventing_the_rest(
+    tmp_path, fixture_dataset, monkeypatch
+):
+    """A third-party TimeoutError legitimately knows no pid; it must not fake one."""
+    import animalite.bench.runner as runner_module
+
+    def plain_timeout(*_args, **_kwargs):
+        raise TimeoutError("something else timed out")
+
+    plan, _ledger, runner = _cold_only(tmp_path, fixture_dataset)
+    planned = sorted(plan.planned_runs, key=lambda r: r.order_index)[0]
+    monkeypatch.setattr(runner_module, "run_capture", plain_timeout)
+    record = runner.run_one(plan, planned)
+
+    assert record.outcome is RunOutcome.TIMEOUT
+    assert record.cold_process_evidence is not None
+    assert record.cold_process_evidence.child_pid is None
+    assert record.cleanup_survivor_groups == []

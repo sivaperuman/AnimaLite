@@ -60,6 +60,7 @@ from animalite.contracts.shot import ShotIntent
 from animalite.core.environment import capture_environment, current_process_instance
 from animalite.core.logging import StructuredLogger, utc_now
 from animalite.core.service import LocalExecutionService
+from animalite.errors import ToolUnavailableError
 from animalite.media.ffmpeg import FFmpegTools
 from animalite.proc import TEARDOWN_BUDGET_SECONDS, CaptureResult, run_capture
 
@@ -190,6 +191,7 @@ class BenchmarkRunner:
         self._clips = {clip.clip_id: clip for clip in dataset.clips}
         self._anchor_cache: dict[str, AnchorSet] = {}
         self._tool_selection: MediaToolSelection | None = None
+        self._bound_tool_pair: FFmpegTools | None = None
         self._warm_service: LocalExecutionService | None = None
 
     # ------------------------------------------------------------------ execution
@@ -286,7 +288,17 @@ class BenchmarkRunner:
         run_dir.mkdir(parents=True, exist_ok=True)
         marker_path = run_dir / "process.json"
         marker_path.unlink(missing_ok=True)
-        expected_tools = self._expected_tools()
+        try:
+            expected_tools = self._expected_tools()
+        except ToolUnavailableError as exc:
+            # No child is launched: there is nothing to hold it to.
+            return self._not_run(
+                plan,
+                planned,
+                f"process-cold run not launched: {exc}",
+                outcome=RunOutcome.FAILED,
+                category=FailureCategory.TOOL_UNAVAILABLE,
+            )
         envelope = ExecutionEnvelope(
             envelope_id=f"{plan.plan_id}:{planned.run_id}",
             request=request,
@@ -318,16 +330,15 @@ class BenchmarkRunner:
         # both let the same allowance be spent twice.
         supervision_seconds = self.timeout_seconds + COLD_STARTUP_ALLOWANCE_SECONDS
         child_env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-        if expected_tools is not None:
-            # The envelope *declares* the expected tools; the environment is how
-            # the child is pointed at them. The envelope never names an
-            # executable to import or run on its own authority.
-            for var, tool in (
-                ("ANIMALITE_FFMPEG", expected_tools.ffmpeg),
-                ("ANIMALITE_FFPROBE", expected_tools.ffprobe),
-            ):
-                if tool.path:
-                    child_env[var] = tool.path
+        # The envelope *declares* the expected tools; the environment is how the
+        # child is pointed at them. The envelope never names an executable to
+        # import or run on its own authority.
+        for var, tool in (
+            ("ANIMALITE_FFMPEG", expected_tools.ffmpeg),
+            ("ANIMALITE_FFPROBE", expected_tools.ffprobe),
+        ):
+            if tool.path:
+                child_env[var] = tool.path
         clock_start = time.perf_counter()
         try:
             completed = run_capture(
@@ -338,6 +349,11 @@ class BenchmarkRunner:
             )
         except TimeoutError as exc:
             wall_seconds = time.perf_counter() - clock_start
+            # A structured ProcessFailure already knows the pid and any groups it
+            # left behind; discarding those on the one path where a leak is most
+            # likely is exactly what the evidence exists to prevent. A plain
+            # third-party TimeoutError legitimately knows neither.
+            survivors = tuple(getattr(exc, "survivors", ()))
             return self._not_run(
                 plan,
                 planned,
@@ -347,20 +363,37 @@ class BenchmarkRunner:
                 outcome=RunOutcome.TIMEOUT,
                 category=FailureCategory.TIMEOUT,
                 failure_seconds=wall_seconds,
+                cold_process_evidence=self._cold_evidence(
+                    argv,
+                    marker_path,
+                    child_pid=getattr(exc, "pid", None),
+                    survivors=survivors,
+                ),
+                cleanup_survivor_groups=survivors,
             )
         except (OSError, ValueError) as exc:
             # Launch failure: no interpreter, unreadable envelope, bad argv.
             wall_seconds = time.perf_counter() - clock_start
+            survivors = tuple(getattr(exc, "survivors", ()))
             return self._not_run(
                 plan,
                 planned,
                 f"process-cold child could not be launched: {type(exc).__name__}: {exc}",
                 outcome=RunOutcome.FAILED,
                 failure_seconds=wall_seconds,
+                cold_process_evidence=self._cold_evidence(
+                    argv,
+                    marker_path,
+                    child_pid=getattr(exc, "pid", None),
+                    survivors=survivors,
+                ),
+                cleanup_survivor_groups=survivors,
             )
         wall_seconds = time.perf_counter() - clock_start
 
-        evidence = self._cold_evidence(completed, argv, marker_path)
+        evidence = self._cold_evidence(
+            argv, marker_path, child_pid=completed.pid, survivors=completed.survivors
+        )
         stdout = completed.stdout.decode("utf-8", "replace")
         stderr = completed.stderr.decode("utf-8", "replace")
 
@@ -485,14 +518,56 @@ class BenchmarkRunner:
                 )
         return None
 
-    def _expected_tools(self) -> MediaToolSelection | None:
-        """The tool pair the child must execute with, hashed once per runner."""
-        if self._tool_selection is None and self.tools.available:
-            self._tool_selection = self.tools.with_content_hashes().selection()
-        return self._tool_selection
+    def _bound_tools(self) -> FFmpegTools:
+        """This runner's tools with their executable identity resolved, hashed once.
+
+        Warm and cold runs of one plan must record the *same* verifiable
+        identity. Hashing only on the cold path left every warm sample carrying
+        an unverified one, which is the same gap in a quieter place.
+        """
+        if self._bound_tool_pair is None:
+            self._bound_tool_pair = (
+                self.tools.with_content_hashes() if self.tools.available else self.tools
+            )
+        return self._bound_tool_pair
+
+    def _expected_tools(self) -> MediaToolSelection:
+        """The tool pair the child must execute with, hashed once per runner.
+
+        Raises rather than returning ``None``. Returning ``None`` when the parent
+        could not resolve a pair turned the whole contract off, and the child
+        then rediscovered host FFmpeg and produced an *accepted* cold sample
+        under a different configuration.
+        """
+        if self._tool_selection is not None:
+            return self._tool_selection
+        if not self.tools.available:
+            raise ToolUnavailableError(
+                "the media tools this benchmark must bind are unavailable in the "
+                f"parent: {self.tools.unavailable_reason}. A process-cold run "
+                "cannot be launched without a complete executable identity to "
+                "hold the child to."
+            )
+        selection = self._bound_tools().selection()
+        missing = [
+            name for name in ("ffmpeg", "ffprobe") if not getattr(selection, name).content_hash
+        ]
+        if missing:
+            raise ToolUnavailableError(
+                f"could not compute a content hash for {', '.join(missing)}; without "
+                "it the executed executable cannot be verified, and an unverified "
+                "identity is not accepted"
+            )
+        self._tool_selection = selection
+        return selection
 
     def _cold_evidence(
-        self, completed: CaptureResult, argv: list[str], marker_path: Path
+        self,
+        argv: list[str],
+        marker_path: Path,
+        *,
+        child_pid: int | None,
+        survivors: Sequence[int] = (),
     ) -> ColdProcessEvidence:
         """Build the evidence that this run really used a new process instance.
 
@@ -510,14 +585,14 @@ class BenchmarkRunner:
         except (OSError, ValueError):
             child_instance = None
         return ColdProcessEvidence(
-            child_pid=completed.pid,
+            child_pid=child_pid,
             parent_pid=os.getpid(),
             interpreter=sys.executable,
             argv=argv,
             os_file_cache_cleared=False,
             child_instance=child_instance,
             parent_instance=current_process_instance(),
-            child_survivor_groups=list(completed.survivors),
+            child_survivor_groups=list(survivors),
         )
 
     @staticmethod
@@ -548,7 +623,7 @@ class BenchmarkRunner:
             self._warm_service = LocalExecutionService(
                 self.workspace / "warm",
                 registry=self.registry,
-                tools=self.tools,
+                tools=self._bound_tools(),
                 logger=self.logger,
             )
         return self._warm_service

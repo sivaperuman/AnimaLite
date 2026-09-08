@@ -97,17 +97,25 @@ class MediaToolSelection(Contract):
                 want, got = getattr(expected, field), getattr(actual, field)
                 if want != got:
                     problems.append(f"{name}.{field}: expected {want!r}, executed {got!r}")
-            if expected.content_hash and actual.content_hash:
-                if expected.content_hash != actual.content_hash:
-                    problems.append(
-                        f"{name}.content_hash: expected {expected.content_hash}, "
-                        f"executed {actual.content_hash}"
-                    )
-            elif expected.content_hash or actual.content_hash:
+            if not expected.available or not actual.available:
                 problems.append(
-                    f"{name}.content_hash: only one side recorded a hash "
-                    f"(expected {expected.content_hash!r}, executed {actual.content_hash!r}), "
-                    "so the executable identity is unverified"
+                    f"{name}: expected available={expected.available}, "
+                    f"executed available={actual.available}; an unusable tool cannot "
+                    "establish the executed configuration"
+                )
+            # Content identity fails closed. Two missing hashes are not a match:
+            # they are two unverified executables, and treating them as equal is
+            # exactly the substitution this comparison exists to catch.
+            if not expected.content_hash or not actual.content_hash:
+                problems.append(
+                    f"{name}.content_hash: expected {expected.content_hash!r}, "
+                    f"executed {actual.content_hash!r}; the executable identity is "
+                    "unverified and cannot be accepted"
+                )
+            elif expected.content_hash != actual.content_hash:
+                problems.append(
+                    f"{name}.content_hash: expected {expected.content_hash}, "
+                    f"executed {actual.content_hash}"
                 )
         return problems
 
@@ -254,10 +262,13 @@ class ExecutionEnvelope(Document):
     #: Written by the child at startup, before any work, so the launcher can
     #: tell "never started" from "started and failed".
     process_marker_path: str | None = None
-    #: The media tools the sender resolved. The child verifies the tools it is
-    #: about to run against this and refuses a mismatch, and the parent checks
-    #: the identities the child actually recorded.
-    expected_tools: MediaToolSelection | None = None
+    #: The media tools the sender resolved -- **required**. The child verifies
+    #: the tools it is about to run against this and refuses a mismatch, and the
+    #: parent checks the identities the child actually recorded. It was optional
+    #: once, and an unresolvable parent pair then turned the whole contract off:
+    #: the child rediscovered host FFmpeg and produced an accepted cold sample
+    #: under a different configuration.
+    expected_tools: MediaToolSelection
 
     @model_validator(mode="after")
     def _check_profile_matches_request(self) -> ExecutionEnvelope:

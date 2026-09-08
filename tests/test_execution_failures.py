@@ -17,7 +17,7 @@ import pytest
 from animalite.adapters.fixture import FIXTURE_PROFILE, FixtureAdapter
 from animalite.adapters.registry import Registry
 from animalite.contracts.enums import FailureCategory, JobState
-from animalite.contracts.media import P_L_FINAL_OUTPUT
+from animalite.contracts.media import P_L_FINAL_OUTPUT, PREVIEW_OUTPUT
 from animalite.core.attempts import AttemptStore
 from animalite.core.service import OUTPUT_FILENAME, LocalExecutionService
 from animalite.errors import AttemptConflictError
@@ -627,3 +627,75 @@ def test_survivor_evidence_survives_an_exception(tmp_path):
     # And a wrapper must forward it rather than replace the evidence with nothing.
     wrapped = JobTimeoutError("wrapped", survivors=exc.survivors)
     assert wrapped.survivors == (7, 8)
+
+
+# --- R4 round 4: the teardown budget is per lifecycle, not per call ----------
+
+
+def test_teardown_and_close_share_one_lifecycle_budget(tmp_path, monkeypatch):
+    """R4.2: a timeout path calls terminate_tree(), then close() calls it again.
+
+    Each call used to start a fresh absolute budget, so one process lifecycle
+    spent it twice: measured 0.200 s for the first teardown and 0.401 s once
+    `close()` had run as well.
+    """
+    from animalite.proc import ManagedProcess
+
+    script = tmp_path / "ignores_term.py"
+    script.write_text(
+        "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(30)\n"
+    )
+    budget = 0.3
+    proc = ManagedProcess([sys.executable, str(script)], grace_seconds=budget)
+    try:
+        time.sleep(0.15)
+        monkeypatch.setattr(proc, "_group_alive", lambda: True)
+        started = time.monotonic()
+        proc.terminate_tree()
+        proc.close()  # what the context manager does on the way out
+        elapsed = time.monotonic() - started
+        survivors_after = list(proc.survivors)
+    finally:
+        proc.process.kill()
+
+    assert elapsed < budget * 1.6, (
+        f"teardown plus close took {elapsed:.3f}s against a {budget:.2f}s lifecycle "
+        "budget; the budget is being restarted per call"
+    )
+    assert survivors_after, "a later cleanup call must not erase the survivor evidence"
+
+
+def test_an_encoder_that_hangs_after_the_last_frame_still_times_out(tmp_path):
+    """R4.2: the final wait had `max(0.1, ...)`, renewing 100 ms past the deadline."""
+    from unittest.mock import patch
+
+    from animalite.contracts.profile import ThreadBudget
+    from animalite.errors import JobTimeoutError
+    from animalite.media import encode as encode_module
+
+    output = PREVIEW_OUTPUT
+    frame = b"\x00" * (output.width * output.height * 3)
+
+    def frames():
+        for _ in range(output.delivery_frame_count):
+            yield frame
+
+    # Consumes all of stdin, then lives well past the deadline.
+    script = tmp_path / "drain_then_hang.py"
+    script.write_text("import sys, time\nsys.stdin.buffer.read()\ntime.sleep(10)\n")
+    destination = tmp_path / "hung.mp4"
+    argv = [sys.executable, str(script)]
+    with patch.object(encode_module, "encoder_argv", lambda *a, **k: argv):
+        started = time.monotonic()
+        with pytest.raises(JobTimeoutError):
+            encode_module.encode_delivery_stream(
+                FFmpegTools.discover(),
+                frames(),
+                output,
+                destination,
+                thread_budget=ThreadBudget(total_threads=4),
+                timeout_seconds=0.5,
+            )
+        elapsed = time.monotonic() - started
+    assert elapsed < 6.0, f"the hung encoder was waited on for {elapsed:.3f}s"
+    assert not destination.exists(), "nothing may be published when the encoder hangs"

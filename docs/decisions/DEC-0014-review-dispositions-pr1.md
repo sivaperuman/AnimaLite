@@ -9,6 +9,8 @@
   — accepted R1/R2/R6 for the gated foundation and returned R3/R4/R5 as partial.
 * **Third review:** https://github.com/sivaperuman/AnimaLite/pull/1#issuecomment-5586094716
   — held R1/R2/R6 resolved and returned R3/R4/R5 as partial a second time.
+* **Fourth review:** https://github.com/sivaperuman/AnimaLite/pull/1#issuecomment-5586446062
+  — resolved R5, and returned R3 and R4 as partial with four fail-open paths.
 * **Reviewed head:** `0e2c1a98dc4c190bc70b8ce9c281f34abd929375`; follow-up
   reviewed `8ba39f5d0a9e1666f6a4f7c7b7f8e002f57b7c50`.
 
@@ -88,6 +90,33 @@ deadline observable in one operation is not the same as making it authoritative;
 recording survivors is not the same as acting on them. The regressions in R4.1
 and R4.2 came from allowances added to make a fix comfortable — a reap floor and
 a teardown grace — each of which quietly re-opened the guarantee it sat next to.
+
+## Fourth round: the remaining fail-open paths in R3 and R4
+
+R5 was accepted. Four fail-open paths remained, each reproduced before fixing.
+One of them was again a regression introduced by the third round's own fix.
+
+| ID | Reproduced as | Disposition |
+| --- | --- | --- |
+| R3(f) | The tool contract switched itself **off** when the parent could not resolve a pair: `_expected_tools()` returned `None`, and the child then rediscovered freely. With an unavailable pair injected into the parent and host FFmpeg still on `PATH`, the cold run reported **`succeeded`** having executed `/usr/bin/ffmpeg` | Fixed: `ExecutionEnvelope.expected_tools` is **required**; `_expected_tools()` raises rather than returning `None`; a parent that cannot resolve a complete identity records a `TOOL_UNAVAILABLE` run and **launches no child** |
+| R3(g) | Two **absent** content hashes compared equal, so an unverified pair passed the check | Fixed: content identity fails closed. A missing hash on either side is reported as unverified and rejected. Paths are canonicalised with `realpath` before hashing |
+| R3(h) | Warm runs recorded tool identities with **no content hash**, so only cold samples carried a verifiable identity | Fixed: the runner hashes once and both paths record the same identity |
+| R4.2(c) | **Regression from round three.** `terminate_tree()` started a fresh absolute budget on every call, and `close()` always calls it again, so one process lifecycle spent the budget twice: **0.200 s**, then **0.401 s** with `close()` | Fixed: the teardown deadline is stored on the instance and every later call reuses it. An established survivor result is never cleared by a later call |
+| R4.2(d) | One literal renewed allowance remained: the encoder's final wait was `max(0.1, deadline - now)`, so an encoder that consumed every frame and then hung got another 100 ms | Fixed: expired means expired — tear down and raise |
+| R4.3(b) | The outer cold timeout caught the structured `ProcessTimeout` as a broad `TimeoutError` and dropped its fields. An injected `ProcessTimeout(pid=424242, survivors=(777,))` produced `cold_process_evidence=None` and `cleanup_survivor_groups=[]` | Fixed: best-available evidence is built from the exception plus any marker on disk. A plain third-party `TimeoutError` still records `child_pid=None` rather than inventing one |
+
+### One correction found by our own tests, not by review
+
+Making the teardown budget lifecycle-scoped initially left a **zombie child**:
+with the budget spent, the post-`SIGKILL` `wait()` got zero seconds, so the
+process was killed but never reaped and still appeared under `pgrep -P`.
+`test_a_job_timeout_kills_the_encoder_and_leaves_no_orphan` caught it.
+
+Reaping after `SIGKILL` now has its own small bounded allowance. This is *not* a
+reinstatement of the reap floor that R4.1 removed, and the distinction is the
+whole point: that floor let a **still-running** process be reported as a
+success, whereas `SIGKILL` cannot be caught, so the process is already dead and
+`waitpid` is collecting a corpse. Skipping it buys nothing and leaves a zombie.
 
 ## The qualification implementation gate (R1)
 

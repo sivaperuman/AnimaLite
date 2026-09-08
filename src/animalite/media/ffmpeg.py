@@ -96,11 +96,23 @@ def probe_tool(name: str, env_var: str, *, timeout: float = 20.0) -> ToolIdentit
 
 
 def _hashed(tool: ToolIdentity) -> ToolIdentity:
-    """Fill in ``content_hash`` for a resolved executable, best effort."""
-    if tool.content_hash or not tool.path:
+    """Resolve the canonical path and fill in ``content_hash``.
+
+    The path is realpath'd first: two names for one executable are the same
+    executable, and a symlink that is later repointed is not. A hash that cannot
+    be computed is left absent, and the comparison treats an absent hash as
+    unverified rather than as a match.
+    """
+    if not tool.path:
         return tool
     try:
-        return tool.model_copy(update={"content_hash": sha256_file(tool.path)})
+        canonical = os.path.realpath(tool.path)
+        return tool.model_copy(
+            update={
+                "path": canonical,
+                "content_hash": tool.content_hash or sha256_file(canonical),
+            }
+        )
     except OSError:  # pragma: no cover - unreadable executable
         return tool
 
