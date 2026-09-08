@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import subprocess
 import sys
@@ -9,12 +10,45 @@ from pathlib import Path
 
 from animalite import SCHEMA_VERSION, __version__
 from animalite.contracts.base import sha256_file
-from animalite.contracts.job import EnvironmentRecord
+from animalite.contracts.job import EnvironmentRecord, ProcessInstance
 from animalite.contracts.profile import ThreadBudget
 from animalite.media.ffmpeg import FFmpegTools
 from animalite.resources import thread_environment
 
-__all__ = ["capture_environment", "git_state", "repo_root"]
+__all__ = ["capture_environment", "current_process_instance", "git_state", "repo_root"]
+
+
+def current_process_instance() -> ProcessInstance:
+    """Identify *this* process instance, not just its pid.
+
+    Pids are reused, so a recorded pid alone cannot show that a process-cold run
+    used a genuinely new process. ``/proc/self/stat`` field 22 is the process
+    start time in clock ticks since boot, and ``boot_id`` scopes it to this
+    boot, so the triple is unique. Both reads are best effort: on a system
+    without ``/proc`` the fields stay ``None`` and
+    :attr:`ProcessInstance.is_identified` reports that, rather than a pid being
+    passed off as proof.
+    """
+    boot_id: str | None = None
+    start_ticks: int | None = None
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+    except OSError:  # pragma: no cover - non-Linux or restricted /proc
+        boot_id = None
+    try:
+        # The comm field can contain spaces and parentheses, so split after the
+        # final ')' rather than on whitespace from the start.
+        stat = Path("/proc/self/stat").read_text(encoding="utf-8")
+        fields = stat[stat.rindex(")") + 2 :].split()
+        start_ticks = int(fields[19])  # field 22 overall, 20th after state
+    except (OSError, ValueError, IndexError):  # pragma: no cover - as above
+        start_ticks = None
+    return ProcessInstance(
+        pid=os.getpid(),
+        boot_id=boot_id,
+        start_ticks=start_ticks,
+        interpreter=sys.executable,
+    )
 
 
 def repo_root(start: Path | None = None) -> Path | None:

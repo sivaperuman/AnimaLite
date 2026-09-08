@@ -26,7 +26,6 @@ from __future__ import annotations
 import json
 import os
 import random
-import subprocess
 import sys
 import time
 from collections.abc import Sequence
@@ -45,17 +44,39 @@ from animalite.contracts.benchmark import (
     PlannedRun,
     RunRecord,
 )
-from animalite.contracts.enums import JobState, RunKind, RunOutcome
-from animalite.contracts.job import AttemptRecord, EnvironmentRecord, RenderRequest
+from animalite.contracts.enums import FailureCategory, JobState, RunKind, RunOutcome
+from animalite.contracts.job import (
+    AttemptRecord,
+    EnvironmentRecord,
+    ExecutionEnvelope,
+    FailureRecord,
+    ProcessInstance,
+    RenderRequest,
+)
 from animalite.contracts.media import P_L_FINAL_OUTPUT, PREVIEW_OUTPUT, OutputSpec
 from animalite.contracts.profile import EngineProfile
 from animalite.contracts.shot import ShotIntent
-from animalite.core.environment import capture_environment
+from animalite.core.environment import capture_environment, current_process_instance
 from animalite.core.logging import StructuredLogger, utc_now
 from animalite.core.service import LocalExecutionService
 from animalite.media.ffmpeg import FFmpegTools
+from animalite.proc import CaptureResult, run_capture
 
-__all__ = ["BenchmarkRunner", "build_plan", "load_dataset", "load_host_record"]
+#: Bounded teardown grace added on top of the job deadline for the cold child.
+#: The child enforces its own job deadline; this covers only interpreter
+#: shutdown and process-group teardown, so a hung child cannot outlive the plan.
+COLD_TEARDOWN_GRACE_SECONDS = 30.0
+
+__all__ = [
+    "COLD_TEARDOWN_GRACE_SECONDS",
+    "BenchmarkRunner",
+    "build_plan",
+    "load_dataset",
+    "load_host_record",
+    # Re-exported so tests can substitute the supervised launcher at this
+    # module's boundary rather than reaching into `animalite.proc` globally.
+    "run_capture",
+]
 
 
 def load_dataset(path: Path) -> DatasetManifest:
@@ -177,7 +198,19 @@ class BenchmarkRunner:
         selected.sort(key=lambda r: r.order_index)
         records: list[RunRecord] = []
         for planned in selected:
-            record = self.run_one(plan, planned)
+            try:
+                record = self.run_one(plan, planned)
+            except Exception as exc:
+                # One run's failure must not lose the record for that run *or*
+                # abandon the rest of the plan. An unhandled TimeoutExpired at
+                # the cold launch boundary previously aborted run() with zero of
+                # two planned runs appended.
+                record = self._not_run(
+                    plan,
+                    planned,
+                    f"run failed at the harness boundary: {type(exc).__name__}: {exc}",
+                    outcome=RunOutcome.FAILED,
+                )
             self.ledger.append(record)
             records.append(record)
         return records
@@ -237,12 +270,28 @@ class BenchmarkRunner:
         The clock starts *before* the child is launched, so interpreter startup,
         imports, tool discovery and service/adapter construction are all inside
         the section 12.0 cold boundary.
+
+        The child receives an :class:`ExecutionEnvelope` -- request *and*
+        resolved profile with its digest -- not a bare profile id. Passing the
+        id alone let the child rebuild its own default registry: with an
+        overridden ``fixture-synthetic`` in the parent, the warm run produced
+        one output and the cold run produced the *default* profile's output,
+        while both recorded success under the same planned profile.
         """
         run_dir = self.workspace / "cold" / planned.run_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        request_path = run_dir / "request.json"
-        request_path.write_text(
-            json.dumps(request.to_json_obj(), indent=2, sort_keys=True), encoding="utf-8"
+        marker_path = run_dir / "process.json"
+        marker_path.unlink(missing_ok=True)
+        envelope = ExecutionEnvelope(
+            envelope_id=f"{plan.plan_id}:{planned.run_id}",
+            request=request,
+            profile=profile,
+            profile_digest=content_digest(profile),
+            process_marker_path=str(marker_path),
+        )
+        envelope_path = run_dir / "envelope.json"
+        envelope_path.write_text(
+            json.dumps(envelope.to_json_obj(), indent=2, sort_keys=True), encoding="utf-8"
         )
 
         argv = [
@@ -250,55 +299,152 @@ class BenchmarkRunner:
             "-m",
             "animalite",
             "render",
-            "--request-file",
-            str(request_path),
-            "--profile",
-            self.profile_id,
+            "--envelope",
+            str(envelope_path),
             "--workspace",
             str(run_dir / "ws"),
             "--json",
         ]
+        # One launch-to-completion deadline. The child enforces the job deadline
+        # itself; the parent's allowance adds only the bounded teardown grace,
+        # so a hung child cannot outlive the plan.
+        supervision_seconds = self.timeout_seconds + COLD_TEARDOWN_GRACE_SECONDS
         clock_start = time.perf_counter()
-        completed = subprocess.run(  # noqa: S603 - argv list, no shell
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout_seconds + 120.0,
-            check=False,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-        )
-        wall_seconds = time.perf_counter() - clock_start
-
-        if completed.returncode != 0 or not completed.stdout.strip():
+        try:
+            completed = run_capture(
+                argv,
+                timeout=supervision_seconds,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                grace_seconds=COLD_TEARDOWN_GRACE_SECONDS,
+            )
+        except TimeoutError as exc:
+            wall_seconds = time.perf_counter() - clock_start
             return self._not_run(
                 plan,
                 planned,
-                f"process-cold child exited {completed.returncode}: "
-                f"{completed.stderr.strip()[-500:]}",
-                outcome=RunOutcome.FAILED,
+                f"process-cold child exceeded the {supervision_seconds:.1f}s "
+                f"launch-to-completion deadline and its process group was torn "
+                f"down after {wall_seconds:.3f}s: {exc}",
+                outcome=RunOutcome.TIMEOUT,
+                category=FailureCategory.TIMEOUT,
+                failure_seconds=wall_seconds,
             )
-        try:
-            attempt = AttemptRecord.model_validate_json(completed.stdout)
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
+            # Launch failure: no interpreter, unreadable envelope, bad argv.
+            wall_seconds = time.perf_counter() - clock_start
             return self._not_run(
-                plan, planned, f"process-cold child produced no valid record: {exc}"
+                plan,
+                planned,
+                f"process-cold child could not be launched: {type(exc).__name__}: {exc}",
+                outcome=RunOutcome.FAILED,
+                failure_seconds=wall_seconds,
+            )
+        wall_seconds = time.perf_counter() - clock_start
+
+        evidence = self._cold_evidence(completed, argv, marker_path)
+        stdout = completed.stdout.decode("utf-8", "replace")
+        stderr = completed.stderr.decode("utf-8", "replace")
+
+        # Parse the child's record *before* judging its exit status. A child
+        # that timed out cleanly exits 1 while writing a complete failed
+        # AttemptRecord; rejecting it on the exit code alone discarded the
+        # attempt id, the timeout category and the retained diagnostics.
+        attempt = self._parse_child_record(stdout)
+        if attempt is None:
+            return self._not_run(
+                plan,
+                planned,
+                f"process-cold child exited {completed.returncode} without a valid "
+                f"attempt record: {stderr.strip()[-500:]}",
+                outcome=(RunOutcome.FAILED if completed.returncode != 0 else RunOutcome.NOT_RUN),
+                cold_process_evidence=evidence,
+                failure_seconds=wall_seconds,
+            )
+
+        succeeded = attempt.state is JobState.SUCCEEDED
+        if succeeded != (completed.returncode == 0):
+            # Success JSON with a failing exit status (or the reverse) means the
+            # child and its process status disagree. That is a protocol error,
+            # not a success: accepting the JSON would let a broken child report
+            # a pass it never achieved.
+            return self._not_run(
+                plan,
+                planned,
+                f"process-cold child reported state {attempt.state.value!r} but exited "
+                f"{completed.returncode}; refusing to accept a record that contradicts "
+                "the process status",
+                outcome=RunOutcome.FAILED,
+                cold_process_evidence=evidence,
+                failure_seconds=wall_seconds,
+            )
+
+        executed_digest = content_digest(attempt.profile)
+        if executed_digest != envelope.profile_digest:
+            return self._not_run(
+                plan,
+                planned,
+                f"process-cold child executed profile digest {executed_digest} but the "
+                f"plan scheduled {envelope.profile_digest}; the child ran different "
+                "settings than were planned",
+                outcome=RunOutcome.FAILED,
+                cold_process_evidence=evidence,
+                failure_seconds=wall_seconds,
             )
 
         record = self._record_from_attempt(
             plan, planned, attempt, wall_seconds, started_at, profile
         )
-        # Evidence that the run really was a new process, not a reused one.
-        return record.model_copy(
-            update={
-                "cold_process_evidence": ColdProcessEvidence(
-                    child_pid=completed.pid if hasattr(completed, "pid") else None,
-                    parent_pid=os.getpid(),
-                    interpreter=sys.executable,
-                    argv=argv,
-                    os_file_cache_cleared=False,
-                )
-            }
+        return record.model_copy(update={"cold_process_evidence": evidence})
+
+    def _cold_evidence(
+        self, completed: CaptureResult, argv: list[str], marker_path: Path
+    ) -> ColdProcessEvidence:
+        """Build the evidence that this run really used a new process instance.
+
+        The pid comes from the launched process handle -- ``CompletedProcess``
+        has no ``pid`` attribute at all, so the previous ``hasattr`` fallback
+        silently recorded ``None`` every time. The child's own start marker adds
+        boot id and start time, which is what makes two cold runs provably
+        distinct instances rather than merely distinct pids.
+        """
+        child_instance: ProcessInstance | None = None
+        try:
+            child_instance = ProcessInstance.model_validate_json(
+                marker_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            child_instance = None
+        return ColdProcessEvidence(
+            child_pid=completed.pid,
+            parent_pid=os.getpid(),
+            interpreter=sys.executable,
+            argv=argv,
+            os_file_cache_cleared=False,
+            child_instance=child_instance,
+            parent_instance=current_process_instance(),
+            child_survivor_groups=list(completed.survivors),
         )
+
+    @staticmethod
+    def _parse_child_record(stdout: str) -> AttemptRecord | None:
+        """Recover the child's attempt record from stdout, or ``None``.
+
+        Non-JSON notes may share stdout, so the record is taken from the last
+        parseable JSON object rather than assuming the whole stream is one.
+        """
+        text = stdout.strip()
+        if not text:
+            return None
+        candidates = [text]
+        start = text.find("{")
+        if start > 0:
+            candidates.append(text[start:])
+        for candidate in candidates:
+            try:
+                return AttemptRecord.model_validate_json(candidate)
+            except ValueError:
+                continue
+        return None
 
     # ------------------------------------------------------------------ internals
 
@@ -350,15 +496,21 @@ class BenchmarkRunner:
         planned: PlannedRun,
         reason: str,
         outcome: RunOutcome = RunOutcome.NOT_RUN,
+        *,
+        category: FailureCategory = FailureCategory.INTERNAL_ERROR,
+        cold_process_evidence: ColdProcessEvidence | None = None,
+        failure_seconds: float | None = None,
     ) -> RunRecord:
-        """Record a run that never produced a service attempt.
+        """Record a run that never produced an acceptable service attempt.
 
         Section 12.0 keeps every attempted run: a setup failure appends a record
         and the plan continues, rather than silently losing the remainder.
-        """
-        from animalite.contracts.enums import FailureCategory
-        from animalite.contracts.job import FailureRecord
 
+        ``failure_seconds`` is recorded separately from the timing fields on
+        purpose. How long a failure took is diagnostic information; folding it
+        into ``wall_seconds`` would let a failure's latency enter the measured
+        sample as if it were an observation.
+        """
         return RunRecord(
             run_id=planned.run_id,
             plan_id=plan.plan_id,
@@ -366,11 +518,13 @@ class BenchmarkRunner:
             kind=planned.kind,
             repetition=planned.repetition,
             outcome=outcome,
-            failure=FailureRecord(category=FailureCategory.INTERNAL_ERROR, message=reason),
+            failure=FailureRecord(category=category, message=reason),
             host_id=self.host.host_id,
             profile_id=self.profile_id,
             qualification_eligible_profile=False,
             exploratory=True,
+            cold_process_evidence=cold_process_evidence,
+            failure_elapsed_seconds=failure_seconds,
         )
 
     def _record_from_attempt(
@@ -389,10 +543,14 @@ class BenchmarkRunner:
             outcome = RunOutcome.SUCCEEDED
             recorded_wall: float | None = round(wall_seconds, 6)
             output_hash: str | None = attempt.output.content_hash
+            failure_elapsed: float | None = None
         else:
             outcome = self._failure_outcome(attempt)
             recorded_wall = None
             output_hash = None
+            # Kept, but in its own field: how long a failure took is diagnostic,
+            # and must not enter the latency sample as an observation.
+            failure_elapsed = round(wall_seconds, 6)
 
         return RunRecord(
             run_id=planned.run_id,
@@ -415,6 +573,7 @@ class BenchmarkRunner:
             profile_id=self.profile_id,
             qualification_eligible_profile=eligible,
             exploratory=exploratory,
+            failure_elapsed_seconds=failure_elapsed,
         )
 
     def _fallback_environment(self) -> EnvironmentRecord:

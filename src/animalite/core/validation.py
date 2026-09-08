@@ -31,6 +31,40 @@ def _error(code: str, path: str, message: str, remediation: str) -> ValidationIs
     )
 
 
+def _attribute_control_origin(
+    issues: list[ValidationIssue], *, overridden: set[str]
+) -> list[ValidationIssue]:
+    """Re-point control issues at whichever side actually supplied the value.
+
+    Adapters validate the resolved configuration and do not know where each
+    value came from, so they all report ``controls.<name>``. When the request
+    did not override that control the offending value is a *profile default*,
+    and telling the caller to fix their request would be wrong. Origin is known
+    in exactly one place -- here -- so the remap lives here rather than being
+    reimplemented by every adapter.
+    """
+    remapped: list[ValidationIssue] = []
+    for issue in issues:
+        path = issue.field_path
+        if not path.startswith("controls.") or path.split(".", 1)[1] in overridden:
+            remapped.append(issue)
+            continue
+        name = path.split(".", 1)[1]
+        remapped.append(
+            issue.model_copy(
+                update={
+                    "field_path": f"engine_profile.parameters.{name}",
+                    "remediation": (
+                        f"{issue.remediation} This value is the {name!r} default of "
+                        f"the engine profile, not a request control: correct the "
+                        f"profile, or override {name!r} in the request."
+                    ),
+                }
+            )
+        )
+    return remapped
+
+
 def _validate_anchors(request: RenderRequest, profile: EngineProfile) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     anchors = request.anchors
@@ -245,9 +279,19 @@ def validate_request(
     issues.extend(_validate_anchors(request, profile))
     issues.extend(_validate_profile_fit(request, profile))
     issues.extend(_validate_media(request))
+    # Validate the *effective* configuration -- profile defaults with the
+    # request's overrides applied -- because that is what synthesis will read.
+    # Validating `request.controls` alone let an invalid profile default reach
+    # the adapter unchecked, and let a request control be accepted here and fail
+    # mid-synthesis: `controls={"drift_pixels": "not-a-number"}` returned
+    # valid=true with zero errors and then raised while converting to float.
+    effective = profile.effective_controls(request.controls)
     issues.extend(
-        registry.adapter_for(profile).validate(
-            profile, request.anchors, request.output, request.controls
+        _attribute_control_origin(
+            registry.adapter_for(profile).validate(
+                profile, request.anchors, request.output, effective
+            ),
+            overridden=set(request.controls),
         )
     )
 

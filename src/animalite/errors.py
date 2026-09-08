@@ -49,6 +49,7 @@ class CodeVAL:
     PROFILE_ENDPOINT_MODE = "VAL-PROFILE-ENDPOINT-MODE"
     PROFILE_ARTIFACT_UNVERIFIED = "VAL-PROFILE-ARTIFACT-UNVERIFIED"
     CONTROL_UNSUPPORTED = "VAL-CONTROL-UNSUPPORTED"
+    CONTROL_VALUE_INVALID = "VAL-CONTROL-VALUE-INVALID"
     CADENCE_UNSUPPORTED = "VAL-CADENCE-UNSUPPORTED"
     DURATION_MISMATCH = "VAL-DURATION-MISMATCH"
     TOOL_UNAVAILABLE = "VAL-TOOL-UNAVAILABLE"
@@ -77,6 +78,17 @@ class ProfileNotFoundError(AnimaLiteError):
 
 class AdapterError(AnimaLiteError):
     category = FailureCategory.ADAPTER_ERROR
+
+
+class JobCancelled(AnimaLiteError):
+    """Cancellation reached a blocking native operation and stopped it.
+
+    Distinct from a timeout: the deadline had not expired. Kept separate so an
+    attempt cancelled mid-encode is recorded as ``cancelled`` rather than being
+    reported as an encoder fault or a deadline breach.
+    """
+
+    category = FailureCategory.CANCELLED
 
 
 class EncoderError(AnimaLiteError):

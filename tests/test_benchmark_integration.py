@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,12 @@ from animalite.contracts.benchmark import (
     HostRecord,
     TargetSet,
 )
-from animalite.contracts.enums import QualificationVerdict, RunKind, RunOutcome
+from animalite.contracts.enums import (
+    FailureCategory,
+    QualificationVerdict,
+    RunKind,
+    RunOutcome,
+)
 from animalite.fixtures.generator import FIXTURE_CLIPS, generate_clip, write_anchor_set
 
 pytestmark = [pytest.mark.media, pytest.mark.slow]
@@ -43,8 +49,10 @@ def fixture_dataset(tmp_path, tools) -> DatasetManifest:
     return DatasetManifest(dataset_id="fixture-development", clips=clips)
 
 
-def _run(tmp_path, dataset, *, warm=1, cold=1, preview=1):
+def _run(tmp_path, dataset, *, warm=1, cold=1, preview=1, profile_override=None):
     registry = default_registry()
+    if profile_override is not None:
+        registry.register_profile(profile_override)
     profile = registry.profile("fixture-synthetic")
     host = HostRecord(host_id="development-unapproved")
     plan = build_plan(
@@ -197,20 +205,109 @@ def test_cold_runs_execute_in_a_different_process_from_the_warm_service(tmp_path
         assert any("not disk-cold" in note for note in evidence.notes)
 
 
-def test_cold_runs_are_not_faster_than_warm_runs(tmp_path, fixture_dataset):
-    """Interpreter startup is inside the cold boundary, so cold >= warm.
+def test_the_cold_clock_starts_before_the_child_is_launched(tmp_path, fixture_dataset, monkeypatch):
+    """Timer placement, proved by controlled startup work rather than by racing.
 
-    A cold run measuring faster than a warm one would mean initialisation had
-    escaped the boundary.
+    Comparing `min(cold) > min(warm)` on a shared CI runner is not a correctness
+    invariant: it can fail from noise alone. Instead a known delay is injected
+    at the launch boundary and the recorded cold wall time is required to have
+    absorbed it -- which is only true if the clock started before the launch.
     """
-    _, ledger, _ = _run(tmp_path, fixture_dataset, warm=1, cold=1, preview=0)
+    import animalite.bench.runner as runner_module
+
+    injected = 0.75
+    real_capture = runner_module.run_capture
+
+    def slow_launch(*args, **kwargs):
+        time.sleep(injected)
+        return real_capture(*args, **kwargs)
+
+    baseline_run = _run(tmp_path / "baseline", fixture_dataset, warm=0, cold=1, preview=0)
+    baseline = [
+        r.wall_seconds
+        for r in baseline_run[1].records()
+        if r.kind is RunKind.COLD_FINAL and r.wall_seconds
+    ]
+    assert baseline, "no cold run to use as a baseline"
+
+    monkeypatch.setattr(runner_module, "run_capture", slow_launch)
+    _, ledger, _ = _run(tmp_path / "delayed", fixture_dataset, warm=0, cold=1, preview=0)
+    delayed = [
+        r.wall_seconds for r in ledger.records() if r.kind is RunKind.COLD_FINAL and r.wall_seconds
+    ]
+    assert delayed, "no cold run was recorded with the injected delay"
+    assert min(delayed) >= min(baseline) + injected * 0.8, (
+        f"cold wall {min(delayed):.3f}s did not absorb the {injected:.2f}s injected at the "
+        f"launch boundary (baseline {min(baseline):.3f}s); the clock is starting too late"
+    )
+
+
+def test_a_cold_run_executes_the_profile_the_parent_resolved(tmp_path, fixture_dataset):
+    """R3: the child must not substitute a same-named profile of its own.
+
+    The child used to receive only `engine_profile_id` and rebuild the default
+    registry. With an overridden `fixture-synthetic` registered in the parent,
+    the warm run produced one output and the cold run produced the *default*
+    profile's output, while both recorded success under the same planned
+    profile. Identical settings must now yield identical bytes on both paths.
+    """
+    overridden = (
+        default_registry()
+        .profile("fixture-synthetic")
+        .model_copy(update={"parameters": {"ease": "linear", "drift_pixels": 12.0}})
+    )
+    _, ledger, _ = _run(
+        tmp_path, fixture_dataset, warm=1, cold=1, preview=0, profile_override=overridden
+    )
     records = ledger.records()
-    warm = [r.wall_seconds for r in records if r.kind is RunKind.WARM_FINAL and r.wall_seconds]
-    cold = [r.wall_seconds for r in records if r.kind is RunKind.COLD_FINAL and r.wall_seconds]
-    assert warm and cold
-    assert min(cold) > min(warm), (
-        f"cold {min(cold):.3f}s is not slower than warm {min(warm):.3f}s; "
-        "initialisation may be escaping the cold boundary"
+    by_clip: dict[str, dict[RunKind, str]] = {}
+    for record in records:
+        if record.outcome is RunOutcome.SUCCEEDED and record.output_hash:
+            by_clip.setdefault(record.clip_id, {})[record.kind] = record.output_hash
+
+    compared = 0
+    for clip_id, hashes in by_clip.items():
+        warm_hash = hashes.get(RunKind.WARM_FINAL)
+        cold_hash = hashes.get(RunKind.COLD_FINAL)
+        if warm_hash and cold_hash:
+            compared += 1
+            assert warm_hash == cold_hash, (
+                f"{clip_id}: cold output {cold_hash} differs from warm {warm_hash} under "
+                "identical settings; the child executed a different resolved profile"
+            )
+    assert compared, "no clip produced both a warm and a cold output to compare"
+
+
+def test_two_cold_runs_report_distinct_real_process_instances(tmp_path, fixture_dataset):
+    """R3: prove freshness from the child's own identity, not the parent's pid.
+
+    The old evidence read `completed.pid`, which `subprocess.CompletedProcess`
+    does not have, so `child_pid` was always null and the "different process"
+    check only ever asserted things about the parent.
+    """
+    import os
+
+    _, ledger, _ = _run(tmp_path, fixture_dataset, warm=0, cold=2, preview=0)
+    cold = [r for r in ledger.records() if r.kind is RunKind.COLD_FINAL]
+    assert len(cold) >= 2, "need at least two cold runs to compare instances"
+
+    keys = set()
+    for record in cold:
+        assert record.outcome is RunOutcome.SUCCEEDED, record.failure
+        evidence = record.cold_process_evidence
+        assert evidence is not None
+        assert evidence.child_pid is not None and evidence.child_pid > 0
+        assert evidence.child_pid != os.getpid()
+        assert evidence.child_instance is not None, "the child must report its own instance"
+        assert evidence.child_instance.pid == evidence.child_pid
+        assert evidence.is_distinct_process, "child and parent are not provably distinct"
+        assert not evidence.child_survivor_groups, (
+            f"cold run {record.run_id} left process group(s) {evidence.child_survivor_groups} alive"
+        )
+        keys.add(evidence.child_instance.instance_key)
+
+    assert len(keys) == len(cold), (
+        f"two cold runs shared a process instance key: {keys}; they were not fresh processes"
     )
 
 
@@ -235,3 +332,182 @@ def test_a_setup_failure_records_the_run_and_continues_the_plan(tmp_path, fixtur
     assert recorded == plan.run_ids()
     failed = [r for r in ledger.records() if r.clip_id == "unreadable"]
     assert failed and all(r.wall_seconds is None for r in failed)
+
+
+# --- R3/R4 regression: a failing child is retained, a broken launch is contained
+
+
+def _cold_only(tmp_path, dataset, **kwargs):
+    """Build a runner and a one-clip cold-only plan without executing it."""
+    registry = default_registry()
+    profile = registry.profile("fixture-synthetic")
+    host = HostRecord(host_id="development-unapproved")
+    plan = build_plan(
+        dataset=dataset,
+        host=host,
+        profile_id=profile.profile_id,
+        profile_digest=content_digest(profile),
+        target_revision="v0.12-proposed",
+        order_seed=42,
+        warm_repetitions=0,
+        cold_repetitions=kwargs.pop("cold", 1),
+        preview_repetitions=0,
+    )
+    ledger = RunLedger(tmp_path / "ledger")
+    ledger.write_plan(plan)
+    runner = BenchmarkRunner(
+        dataset=dataset,
+        host=host,
+        profile_id=profile.profile_id,
+        workspace=tmp_path / "bench",
+        ledger=ledger,
+        registry=registry,
+        **kwargs,
+    )
+    return plan, ledger, runner
+
+
+def test_a_child_that_times_out_keeps_its_attempt_id_and_category(tmp_path, fixture_dataset):
+    """R3/R4: a clean child failure must not become an anonymous internal error.
+
+    The child writes a complete failed AttemptRecord and exits 1. Rejecting a
+    nonzero exit *before* parsing stdout discarded the attempt id, the timeout
+    category and the diagnostics directory the child had already retained.
+    """
+    plan, _ledger, runner = _cold_only(tmp_path, fixture_dataset, timeout_seconds=0.35)
+    planned = sorted(plan.planned_runs, key=lambda r: r.order_index)[0]
+    record = runner.run_one(plan, planned)
+
+    assert record.outcome is RunOutcome.TIMEOUT
+    assert record.attempt_id, "the child's attempt id was lost"
+    assert record.failure is not None
+    assert record.failure.category is FailureCategory.TIMEOUT
+    assert record.failure.diagnostics_path, "the child's diagnostics were not linked"
+    assert Path(record.failure.diagnostics_path).exists()
+    # Failure latency is retained, but never as a latency observation.
+    assert record.wall_seconds is None
+    assert record.failure_elapsed_seconds is not None and record.failure_elapsed_seconds > 0
+
+
+def test_a_launcher_exception_is_recorded_and_the_plan_continues(
+    tmp_path, fixture_dataset, monkeypatch
+):
+    """R3/R4: an exception at the launch boundary must not abandon the plan.
+
+    Injecting `subprocess.TimeoutExpired` at the cold launch previously escaped
+    `run_one()` and aborted `run()` before the ledger append, losing the current
+    record and every remaining planned run.
+    """
+    import subprocess
+
+    import animalite.bench.runner as runner_module
+
+    def boom(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd=["python"], timeout=1.0)
+
+    plan, ledger, runner = _cold_only(tmp_path, fixture_dataset, cold=2)
+    monkeypatch.setattr(runner_module, "run_capture", boom)
+    records = runner.run(plan)
+
+    assert len(records) == len(plan.planned_runs)
+    assert {r.run_id for r in ledger.records()} == plan.run_ids()
+    assert all(r.outcome is not RunOutcome.SUCCEEDED for r in records)
+    assert all(r.wall_seconds is None for r in records)
+
+
+def test_a_child_that_writes_no_record_is_recorded_as_failed(
+    tmp_path, fixture_dataset, monkeypatch
+):
+    """R3/R4: malformed or absent child output is an explicit record, not a crash."""
+    import animalite.bench.runner as runner_module
+    from animalite.proc import CaptureResult
+
+    def garbage(*_args, **_kwargs):
+        return CaptureResult(
+            returncode=1,
+            stdout=b"not json at all",
+            stderr=b"child exploded",
+            pid=424242,
+            elapsed_seconds=0.01,
+        )
+
+    plan, _ledger, runner = _cold_only(tmp_path, fixture_dataset)
+    monkeypatch.setattr(runner_module, "run_capture", garbage)
+    planned = sorted(plan.planned_runs, key=lambda r: r.order_index)[0]
+    record = runner.run_one(plan, planned)
+
+    assert record.outcome is RunOutcome.FAILED
+    assert record.wall_seconds is None
+    assert record.failure is not None and "child exploded" in record.failure.message
+    assert record.cold_process_evidence is not None
+    assert record.cold_process_evidence.child_pid == 424242
+
+
+def test_success_json_with_a_failing_exit_status_is_refused(tmp_path, fixture_dataset):
+    """R3/R4: a record contradicting the process status is a protocol error.
+
+    Accepting the JSON would let a child that actually failed report a pass.
+    """
+    import animalite.bench.runner as runner_module
+    from animalite.proc import CaptureResult
+
+    plan, _ledger, runner = _cold_only(tmp_path, fixture_dataset)
+    planned = sorted(plan.planned_runs, key=lambda r: r.order_index)[0]
+    honest = runner.run_one(plan, planned)
+    assert honest.outcome is RunOutcome.SUCCEEDED, honest.failure
+
+    attempt_json = (
+        Path(runner.workspace / "cold" / planned.run_id / "ws")
+        .rglob("attempt.json")
+        .__next__()
+        .read_bytes()
+    )
+
+    def lying_child(*_args, **_kwargs):
+        return CaptureResult(
+            returncode=1,
+            stdout=attempt_json,
+            stderr=b"",
+            pid=999,
+            elapsed_seconds=0.01,
+        )
+
+    runner_module.run_capture, real = lying_child, runner_module.run_capture
+    try:
+        record = runner.run_one(plan, planned)
+    finally:
+        runner_module.run_capture = real
+
+    assert record.outcome is RunOutcome.FAILED
+    assert record.wall_seconds is None
+    assert record.failure is not None
+    assert "contradicts" in record.failure.message
+
+
+def test_a_supervisor_timeout_is_recorded_and_the_next_run_still_executes(
+    tmp_path, fixture_dataset, monkeypatch
+):
+    """R3/R4: one launch-to-completion deadline, then the plan carries on."""
+    import animalite.bench.runner as runner_module
+
+    plan, ledger, runner = _cold_only(tmp_path, fixture_dataset, cold=2)
+    calls = {"n": 0}
+    real_capture = runner_module.run_capture
+
+    def first_call_hangs(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("supervised child exceeded its deadline")
+        return real_capture(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "run_capture", first_call_hangs)
+    records = runner.run(plan)
+
+    assert {r.run_id for r in ledger.records()} == plan.run_ids()
+    timed_out = [r for r in records if r.outcome is RunOutcome.TIMEOUT]
+    succeeded = [r for r in records if r.outcome is RunOutcome.SUCCEEDED]
+    assert timed_out, "the supervisor timeout was not recorded as a timeout"
+    assert timed_out[0].failure is not None
+    assert timed_out[0].failure.category is FailureCategory.TIMEOUT
+    assert timed_out[0].wall_seconds is None
+    assert succeeded, "the plan did not continue after the supervisor timeout"

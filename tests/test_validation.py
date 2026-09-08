@@ -209,3 +209,75 @@ def test_a_valid_fixture_request_still_warns_that_it_cannot_qualify(tmp_path):
     assert report.valid
     warnings = [i for i in report.issues if i.severity is IssueSeverity.WARNING]
     assert any(i.code == CodeVAL.NON_QUALIFYING_PROFILE for i in warnings)
+
+
+# --- R5 regression: validate the resolved configuration, not just the overrides
+
+
+@pytest.mark.parametrize(
+    ("value", "why"),
+    [
+        ("not-a-number", "a string is not a pixel offset"),
+        (float("nan"), "NaN is not a finite offset"),
+        (float("inf"), "infinity is not a finite offset"),
+        (True, "a bool is not a pixel count, even though bool subclasses int"),
+        (10**9, "an offset past the frame width would shift everything off-canvas"),
+    ],
+)
+def test_an_invalid_drift_control_is_rejected_before_execution(tmp_path, value, why):
+    """R5: `controls={"drift_pixels": "not-a-number"}` returned valid=true.
+
+    Validation received only `request.controls` and the fixture adapter checked
+    `ease` alone, so an unusable value passed validation and then raised a bare
+    ValueError inside synthesis instead of a stable validation code.
+    """
+    anchors = AnchorSet(anchors=_endpoints(tmp_path))
+    report = _report(anchors, controls={"drift_pixels": value})
+    assert not report.valid, why
+    assert CodeVAL.CONTROL_VALUE_INVALID in report.error_codes
+    issue = next(i for i in report.errors if i.code == CodeVAL.CONTROL_VALUE_INVALID)
+    assert issue.field_path == "controls.drift_pixels"
+
+
+def test_a_valid_drift_control_is_accepted(tmp_path):
+    """A finite signed offset inside the frame is legitimate and stays legitimate."""
+    anchors = AnchorSet(anchors=_endpoints(tmp_path))
+    assert _report(anchors, controls={"drift_pixels": -12.5}).valid
+
+
+def test_an_invalid_profile_default_is_rejected_with_no_override(tmp_path):
+    """R5: an invalid *default* must not slip through because nobody overrode it.
+
+    The issue is attributed to the profile, not to a request control the caller
+    never sent.
+    """
+    registry = default_registry()
+    registry.register_profile(
+        registry.profile("fixture-synthetic").model_copy(
+            update={"parameters": {"ease": "smoothstep", "drift_pixels": "oops"}}
+        )
+    )
+    anchors = AnchorSet(anchors=_endpoints(tmp_path))
+    report = validate_request(make_request(anchors), registry, tools=TOOLS)
+
+    assert not report.valid
+    issue = next(i for i in report.errors if i.code == CodeVAL.CONTROL_VALUE_INVALID)
+    assert issue.field_path == "engine_profile.parameters.drift_pixels", (
+        "an invalid profile default must not be reported as a request control"
+    )
+    assert "engine profile" in issue.remediation
+
+
+def test_a_valid_override_replaces_an_invalid_unused_default(tmp_path):
+    """A default synthesis will never read must not block a valid request."""
+    registry = default_registry()
+    registry.register_profile(
+        registry.profile("fixture-synthetic").model_copy(
+            update={"parameters": {"ease": "smoothstep", "drift_pixels": "oops"}}
+        )
+    )
+    anchors = AnchorSet(anchors=_endpoints(tmp_path))
+    report = validate_request(
+        make_request(anchors, controls={"drift_pixels": 3.0}), registry, tools=TOOLS
+    )
+    assert report.valid, [i.message for i in report.errors]

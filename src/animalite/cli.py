@@ -38,10 +38,10 @@ from animalite.contracts.benchmark import (
     TargetSet,
 )
 from animalite.contracts.enums import JobState, QualificationVerdict
-from animalite.contracts.job import RenderRequest
+from animalite.contracts.job import ExecutionEnvelope, RenderRequest
 from animalite.contracts.media import P_L_FINAL_OUTPUT, PREVIEW_OUTPUT, OutputSpec
 from animalite.contracts.shot import ShotIntent
-from animalite.core.environment import capture_environment
+from animalite.core.environment import capture_environment, current_process_instance
 from animalite.core.logging import StructuredLogger
 from animalite.core.service import LocalExecutionService
 from animalite.errors import AnimaLiteError, ValidationRejected
@@ -391,15 +391,29 @@ def _evidence(args: argparse.Namespace) -> EvidenceBundle:
     return EvidenceBundle()
 
 
-def _registry() -> Registry:
-    return default_registry()
+def _registry(args: argparse.Namespace | None = None) -> Registry:
+    """Build the registry for this invocation.
+
+    Adapters come only from the built-in allowlist -- an envelope names an
+    ``adapter_key``, never an importable module -- so a serialized job can pick
+    an adapter but can never introduce one. The envelope's *profile* does
+    replace a same-id default: that is the whole point, since a child silently
+    preferring its own default executed different settings than the caller
+    resolved.
+    """
+    registry = default_registry()
+    envelope = _envelope(args) if args is not None else None
+    if envelope is not None:
+        registry.adapter(envelope.profile.adapter_key)  # raises if not allowlisted
+        registry.register_profile(envelope.profile)
+    return registry
 
 
 def _service(args: argparse.Namespace) -> LocalExecutionService:
     workspace = Path(getattr(args, "workspace", None) or "work/ws")
     return LocalExecutionService(
         workspace,
-        registry=_registry(),
+        registry=_registry(args),
         logger=StructuredLogger(enabled=getattr(args, "verbose", False)),
     )
 
@@ -419,13 +433,55 @@ def _output_spec(args: argparse.Namespace) -> OutputSpec:
     return base.model_copy(update=updates) if updates else base
 
 
+def _envelope(args: argparse.Namespace) -> ExecutionEnvelope | None:
+    """Load and re-verify the execution envelope, if one was given.
+
+    The digest is recomputed here, before anything executes: an envelope whose
+    profile does not hash to its declared digest is refused outright rather than
+    run under a settings identity that no longer describes it.
+    """
+    path = getattr(args, "envelope", None)
+    if not path:
+        return None
+    # Loaded once per invocation: both the registry and the request need it, and
+    # the startup marker must be written exactly once.
+    cached = getattr(args, "_loaded_envelope", None)
+    if cached is not None:
+        return cached  # type: ignore[no-any-return]
+    envelope = ExecutionEnvelope.model_validate_json(Path(path).read_text(encoding="utf-8"))
+    actual = content_digest(envelope.profile)
+    if actual != envelope.profile_digest:
+        raise ValidationRejected(
+            f"execution envelope {envelope.envelope_id!r} declares profile digest "
+            f"{envelope.profile_digest} but its profile hashes to {actual}; refusing "
+            "to execute a profile that does not match its declared identity"
+        )
+    marker = envelope.process_marker_path
+    if marker:
+        # Written before any work so the launcher can distinguish "the child
+        # never started" from "the child started and then failed".
+        marker_path = Path(marker)
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(
+            current_process_instance().model_dump_json(indent=2), encoding="utf-8"
+        )
+    # Memo on our own argparse namespace, not on someone else's object.
+    args._loaded_envelope = envelope
+    return envelope
+
+
 def _request(args: argparse.Namespace) -> RenderRequest:
     # A serialized request round-trips exactly, which is what lets the benchmark
     # execute an identical job in a fresh process for process-cold timing.
+    envelope = _envelope(args)
+    if envelope is not None:
+        return envelope.request
     request_file = getattr(args, "request_file", None)
     if request_file:
         return RenderRequest.model_validate_json(Path(request_file).read_text(encoding="utf-8"))
 
+    if not args.profile:
+        raise ValidationRejected("--profile is required unless --envelope is given")
     if not args.anchors:
         raise ValidationRejected("--anchors is required unless --request-file is given")
     anchors = AnchorSet.model_validate_json(Path(args.anchors).read_text(encoding="utf-8"))
@@ -467,16 +523,30 @@ def _coerce(raw: str) -> float | int | str | bool:
 def _add_request_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--profile",
-        required=True,
-        help="engine profile id (required: rendering never selects an engine implicitly)",
+        default=None,
+        help=(
+            "engine profile id. Required unless --envelope carries the resolved "
+            "profile: rendering never selects an engine implicitly."
+        ),
     )
     parser.add_argument("--anchors", default=None, help="path to an anchor-set JSON file")
     parser.add_argument(
         "--request-file",
         default=None,
         help=(
-            "execute a serialized RenderRequest verbatim. Used by the benchmark's "
-            "process-cold path so the child runs an identical job."
+            "execute a serialized RenderRequest verbatim. The request alone does "
+            "NOT carry the resolved profile; use --envelope when the caller's "
+            "profile must be the one executed."
+        ),
+    )
+    parser.add_argument(
+        "--envelope",
+        default=None,
+        help=(
+            "execute a serialized ExecutionEnvelope: the request together with "
+            "the resolved engine profile and its digest. Used by the benchmark's "
+            "process-cold path so the child cannot substitute a same-named "
+            "profile from its own defaults."
         ),
     )
     parser.add_argument("--request-id", default="cli-request", help="request identifier")

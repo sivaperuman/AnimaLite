@@ -11,14 +11,15 @@ against the declared :class:`~animalite.contracts.media.OutputSpec`.
 from __future__ import annotations
 
 import json
-import subprocess
+from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
 
 from animalite.contracts.media import OutputSpec
 from animalite.contracts.results import DecodeProbe
-from animalite.errors import OutputInvalidError
+from animalite.errors import JobCancelled, JobTimeoutError, OutputInvalidError
 from animalite.media.ffmpeg import FFmpegTools
+from animalite.proc import ProcessCancelled, run_capture
 
 __all__ = ["probe_output", "validate_output"]
 
@@ -27,8 +28,20 @@ __all__ = ["probe_output", "validate_output"]
 DURATION_TOLERANCE_SECONDS = 0.001
 
 
-def probe_output(tools: FFmpegTools, path: Path, *, timeout: float = 120.0) -> DecodeProbe:
-    """Decode-count the file and return what the decoder actually reported."""
+def probe_output(
+    tools: FFmpegTools,
+    path: Path,
+    *,
+    timeout: float = 120.0,
+    cancel: Callable[[], bool] | None = None,
+) -> DecodeProbe:
+    """Decode-count the file and return what the decoder actually reported.
+
+    Supervised and cancellable: the caller passes the remaining *job*
+    deadline, so expiry here is the deadline firing and is classified as a
+    timeout rather than as invalid output -- the file was never shown to be
+    bad, the clock ran out before it could be read.
+    """
     tools.require()
     if not path.exists():
         raise OutputInvalidError(f"output file does not exist: {path}")
@@ -48,11 +61,18 @@ def probe_output(tools: FFmpegTools, path: Path, *, timeout: float = 120.0) -> D
         str(path),
     ]
     try:
-        completed = subprocess.run(  # noqa: S603 - argv list, no shell
-            argv, capture_output=True, timeout=timeout, check=False
+        completed = run_capture(argv, timeout=timeout, cancel=cancel)
+    except TimeoutError as exc:
+        raise JobTimeoutError(
+            f"deadline elapsed after {timeout:.3f}s while decode-counting {path}; "
+            f"the probe process group was torn down and nothing was published"
+        ) from exc
+    except ProcessCancelled as exc:
+        raise JobCancelled(f"cancelled while decode-counting {path}: {exc}") from exc
+    if completed.survivors:
+        raise OutputInvalidError(
+            f"probing {path} left process group(s) {completed.survivors} alive"
         )
-    except subprocess.TimeoutExpired as exc:
-        raise OutputInvalidError(f"probing {path} timed out after {timeout}s") from exc
     if completed.returncode != 0:
         raise OutputInvalidError(
             f"ffprobe exited {completed.returncode} for {path}: "

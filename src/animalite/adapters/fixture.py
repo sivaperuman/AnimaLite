@@ -20,6 +20,7 @@ run record and benchmark report produced from it is labelled non-qualifying.
 
 from __future__ import annotations
 
+import math
 import threading
 from collections.abc import Iterator
 
@@ -37,7 +38,7 @@ from animalite.contracts.profile import (
     ThreadBudget,
 )
 from animalite.contracts.validation import ValidationIssue
-from animalite.errors import CodeVAL
+from animalite.errors import AdapterError, CodeVAL
 
 __all__ = ["FIXTURE_ADAPTER_KEY", "FIXTURE_PROFILE", "NON_QUALIFYING_REASON", "FixtureAdapter"]
 
@@ -105,6 +106,60 @@ def _shift(frame: NDArray[np.uint8], dx: int, dy: int) -> NDArray[np.uint8]:
     return out
 
 
+def _validate_drift(value: float | int | str | bool, output: OutputSpec) -> list[ValidationIssue]:
+    """Check ``drift_pixels`` as a finite signed pixel offset within the frame.
+
+    Routine policy (DEC-0015): a finite signed number strictly inside the output
+    width is accepted; a bool is rejected even though ``bool`` is an ``int``
+    subclass, because ``True`` as a pixel count is a mistake, not an offset of
+    one. Everything else -- a string, NaN, an infinity, an offset that would
+    shift the whole frame off-canvas -- is a validation error, so it surfaces as
+    a stable code rather than a ``ValueError`` inside synthesis.
+    """
+
+    def issue(message: str, remediation: str) -> ValidationIssue:
+        return ValidationIssue(
+            code=CodeVAL.CONTROL_VALUE_INVALID,
+            severity=IssueSeverity.ERROR,
+            field_path="controls.drift_pixels",
+            message=message,
+            remediation=remediation,
+        )
+
+    bound = f"strictly between -{output.width} and {output.width}"
+    if isinstance(value, bool):
+        return [
+            issue(
+                f"drift_pixels must be a number, not the boolean {value!r}",
+                f"Pass a finite number of pixels {bound}.",
+            )
+        ]
+    if not isinstance(value, (int, float)):
+        return [
+            issue(
+                f"drift_pixels must be a number; got {type(value).__name__} {value!r}",
+                f"Pass a finite number of pixels {bound}.",
+            )
+        ]
+    numeric = float(value)
+    if math.isnan(numeric) or math.isinf(numeric):
+        return [
+            issue(
+                f"drift_pixels must be finite; got {value!r}",
+                f"Pass a finite number of pixels {bound}.",
+            )
+        ]
+    if abs(numeric) >= output.width:
+        return [
+            issue(
+                f"drift_pixels {numeric} is at least the output width "
+                f"({output.width}px), which would shift every frame off-canvas",
+                f"Pass a finite number of pixels {bound}.",
+            )
+        ]
+    return []
+
+
 class FixtureAdapter:
     """Deterministic anchor-blend adapter. Same output for the same inputs, always."""
 
@@ -143,6 +198,13 @@ class FixtureAdapter:
         output: OutputSpec,
         controls: dict[str, float | int | str | bool],
     ) -> list[ValidationIssue]:
+        """Validate the **resolved** configuration the adapter will actually read.
+
+        ``controls`` is the effective map -- profile defaults with request
+        overrides applied -- so an invalid default is caught even with no
+        override, and a valid override legitimately replaces an invalid default
+        that synthesis would never have read.
+        """
         issues: list[ValidationIssue] = []
         for name, value in controls.items():
             if name not in _SUPPORTED_CONTROLS:
@@ -168,6 +230,8 @@ class FixtureAdapter:
                         remediation=f"Use one of: {', '.join(_SUPPORTED_EASE)}.",
                     )
                 )
+            elif name == "drift_pixels":
+                issues.extend(_validate_drift(value, output))
         issues.append(
             ValidationIssue(
                 code=CodeVAL.NON_QUALIFYING_PROFILE,
@@ -195,7 +259,14 @@ class FixtureAdapter:
         anchors = context.anchors
         params = context.controls
         ease = str(params.get("ease", "smoothstep"))
-        drift = float(params.get("drift_pixels", 0.0))
+        raw_drift = params.get("drift_pixels", 0.0)
+        # The service validates the effective controls before reaching here, so
+        # this only fires when an adapter is driven directly. Same check, so the
+        # two paths cannot disagree about what "valid" means.
+        drift_issues = _validate_drift(raw_drift, output)
+        if drift_issues:
+            raise AdapterError(drift_issues[0].message)
+        drift = float(raw_drift)  # _validate_drift proved this is a finite number
         indices = anchors.indices
         cancel = context.cancel_requested
 

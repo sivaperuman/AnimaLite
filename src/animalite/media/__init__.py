@@ -10,11 +10,12 @@ from animalite.media.cadence import (
     frame_accounting,
 )
 from animalite.media.decode import decode_image_rgb24
-from animalite.media.encode import encode_delivery_stream, encoder_argv
+from animalite.media.encode import EncodeOutcome, encode_delivery_stream, encoder_argv
 from animalite.media.ffmpeg import FFmpegTools, probe_tool
 from animalite.media.probe import probe_output, validate_output
 
 __all__ = [
+    "EncodeOutcome",
     "FFmpegTools",
     "animation_index_for_delivery_index",
     "decode_image_rgb24",

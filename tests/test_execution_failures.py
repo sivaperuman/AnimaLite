@@ -310,7 +310,10 @@ def test_the_deadline_bounds_a_write_to_a_child_that_never_reads(tmp_path):
             )
         elapsed = time.monotonic() - started
     assert elapsed < 2.0, f"deadline of 0.2s took {elapsed:.3f}s to fire"
-    assert not (tmp_path / "out.mp4").exists() or (tmp_path / "out.mp4").stat().st_size >= 0
+    # "absent OR size >= 0" is true of every normal file and proved nothing.
+    assert not (tmp_path / "out.mp4").exists(), (
+        "a file was left at the publish path after a deadline breach"
+    )
 
 
 def test_a_descendant_that_outlives_its_leader_is_killed(tmp_path):
@@ -354,3 +357,147 @@ def test_anchor_decode_is_bounded_by_the_remaining_job_deadline(tmp_path, fixtur
     assert record.failure is not None
     assert record.failure.category is FailureCategory.TIMEOUT
     _assert_no_published_output(record)
+
+
+# --- R4 regression: cancellation must reach the blocking native operations ----
+
+
+def _handshake_script(tmp_path: Path, seconds: float = 8.0) -> Path:
+    """A finite child that announces itself and then never reads stdin.
+
+    It exits on its own after `seconds`, so a test that ends only when the child
+    ends is visibly distinguishable from one ended by cancellation.
+    """
+    script = tmp_path / "handshake_stall.py"
+    script.write_text(
+        "import sys, time\n"
+        "sys.stderr.write('READY\\n')\n"
+        "sys.stderr.flush()\n"
+        f"time.sleep({seconds})\n"
+    )
+    return script
+
+
+def test_cancellation_interrupts_a_pipe_write_rather_than_waiting_out_the_child(tmp_path):
+    """R4: cancel must reach inside the blocking write, not merely around it.
+
+    Measured before the fix: with a 600s job deadline and a child that ignored
+    stdin for 3s, a cancel at 0.30s was only observed at 3.013s -- when the
+    child exited on its own. Termination has to be driven by the cancel.
+    """
+    import threading
+
+    from animalite.proc import ManagedProcess, ProcessCancelled
+
+    child_seconds = 8.0
+    cancel = threading.Event()
+    proc = ManagedProcess(
+        [sys.executable, str(_handshake_script(tmp_path, child_seconds))],
+        stderr_path=tmp_path / "child.err",
+        cancel=cancel.is_set,
+    )
+    try:
+        # Handshake: wait until the child has actually started before cancelling,
+        # so the write is genuinely in progress rather than racing startup.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if b"READY" in (tmp_path / "child.err").read_bytes():
+                break
+            time.sleep(0.01)
+        else:  # pragma: no cover - the child failed to start
+            pytest.fail("the child never signalled READY")
+
+        threading.Timer(0.2, cancel.set).start()
+        started = time.monotonic()
+        with pytest.raises(ProcessCancelled, match="cancellation requested"):
+            # Far larger than any pipe buffer, so the write must block.
+            proc.write(b"x" * (8 * 1024 * 1024), deadline=time.monotonic() + 600.0)
+        elapsed = time.monotonic() - started
+    finally:
+        proc.close()
+
+    assert elapsed < child_seconds / 2, (
+        f"the write returned after {elapsed:.3f}s; with the child alive for "
+        f"{child_seconds:.1f}s that is the child exiting, not cancellation"
+    )
+    assert not proc.survivors, f"cancellation left process group(s) {proc.survivors} alive"
+
+
+def test_cancellation_interrupts_a_supervised_capture(tmp_path):
+    """R4: the same must hold for decode/probe, which read a child's output."""
+    import threading
+
+    from animalite.proc import ProcessCancelled, run_capture
+
+    child_seconds = 8.0
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    started = time.monotonic()
+    with pytest.raises(ProcessCancelled, match="cancellation requested"):
+        run_capture(
+            [sys.executable, "-c", f"import time; time.sleep({child_seconds})"],
+            timeout=600.0,
+            cancel=cancel.is_set,
+        )
+    elapsed = time.monotonic() - started
+    assert elapsed < child_seconds / 2, (
+        f"the capture returned after {elapsed:.3f}s, which is the child exiting "
+        "rather than cancellation taking effect"
+    )
+
+
+def test_a_cancelled_encode_is_a_cancelled_attempt_and_publishes_nothing(tmp_path):
+    """R4: cancellation during encode is `cancelled`, never an encoder fault."""
+    import threading
+    from unittest.mock import patch
+
+    from animalite.contracts.profile import ThreadBudget
+    from animalite.errors import JobCancelled
+    from animalite.media import encode as encode_module
+
+    output = P_L_FINAL_OUTPUT
+    frame = b"\x00" * (output.width * output.height * 3)
+
+    def frames():
+        for _ in range(output.delivery_frame_count):
+            yield frame
+
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    argv = [sys.executable, str(_stall_script(tmp_path, seconds=8.0))]
+    destination = tmp_path / "cancelled.mp4"
+    with patch.object(encode_module, "encoder_argv", lambda *a, **k: argv):
+        started = time.monotonic()
+        with pytest.raises(JobCancelled, match="cancelled"):
+            encode_module.encode_delivery_stream(
+                FFmpegTools.discover(),
+                frames(),
+                output,
+                destination,
+                thread_budget=ThreadBudget(total_threads=4),
+                timeout_seconds=600.0,
+                cancel=cancel.is_set,
+            )
+        elapsed = time.monotonic() - started
+
+    assert elapsed < 4.0, f"cancellation took {elapsed:.3f}s against a live child"
+    assert not destination.exists(), "a partial file was left at the publish path"
+
+
+def test_a_probe_deadline_is_classified_as_a_timeout_not_invalid_output(tmp_path):
+    """R4: the clock running out during probing is the deadline, not a bad file.
+
+    Calling it `output_invalid` would claim the file was shown to be bad; it was
+    never read.
+    """
+    from unittest.mock import patch
+
+    from animalite.errors import JobTimeoutError
+    from animalite.media import probe as probe_module
+
+    target = tmp_path / "clip.mp4"
+    target.write_bytes(b"\x00" * 1024)
+    with patch.object(probe_module, "run_capture") as capture:
+        capture.side_effect = TimeoutError("probe exceeded its deadline")
+        with pytest.raises(JobTimeoutError, match="deadline elapsed"):
+            probe_module.probe_output(FFmpegTools.discover(), target, timeout=0.2)

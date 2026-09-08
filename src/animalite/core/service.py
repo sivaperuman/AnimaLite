@@ -15,7 +15,7 @@ from __future__ import annotations
 import shutil
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +55,7 @@ from animalite.core.validation import validate_request
 from animalite.errors import (
     AdapterError,
     AnimaLiteError,
+    JobCancelled,
     JobTimeoutError,
     OutputInvalidError,
     ValidationRejected,
@@ -284,6 +285,8 @@ class LocalExecutionService:
         memory: MemoryObservation | None = None,
         frame_accounting_value: FrameAccounting | None = None,
         device_evidence: DeviceEvidence | None = None,
+        cleanup_survivor_groups: Sequence[int] = (),
+        notes: Sequence[str] = (),
     ) -> None:
         with job.lock:
             update: dict[str, Any] = {
@@ -300,6 +303,10 @@ class LocalExecutionService:
                 update["frame_accounting"] = frame_accounting_value
             if device_evidence is not None:
                 update["device_evidence"] = device_evidence
+            if cleanup_survivor_groups:
+                update["cleanup_survivor_groups"] = list(cleanup_survivor_groups)
+            if notes:
+                update["notes"] = list(notes)
             job.record = job.record.model_copy(update=update)
             self.store.save(job.record)
         job.done_event.set()
@@ -312,6 +319,8 @@ class LocalExecutionService:
         request = job.record.request
         dirs = job.dirs
         stages: list[StageTiming] = []
+        survivor_groups: list[int] = []
+        notes: list[str] = []
         sampler = MemorySampler()
         logger = AttemptLogger(job.record.attempt_id, dirs.log_path, console=self._logger)
         device_evidence = DeviceEvidence(
@@ -361,7 +370,9 @@ class LocalExecutionService:
             adapter = self.registry.adapter_for(profile)
 
             with timed(Stage.DECODE_ANCHORS):
-                anchor_frames = self._decode_anchors(request, remaining())
+                anchor_frames = self._decode_anchors(
+                    request, remaining(), cancel=job.cancel_event.is_set
+                )
 
             self._check_cancelled(job)
             accounting = frame_accounting(request.anchors, request.output)
@@ -381,7 +392,7 @@ class LocalExecutionService:
                 frames = self._counted_frames(job, adapter.synthesize(context), request)
 
             with timed(Stage.ENCODE):
-                encode_delivery_stream(
+                encoded = encode_delivery_stream(
                     self.tools,
                     expand_to_delivery(frames, request.output),
                     request.output,
@@ -389,12 +400,25 @@ class LocalExecutionService:
                     thread_budget=profile.thread_budget,
                     timeout_seconds=remaining(),
                     stderr_path=encoder_stderr,
+                    cancel=job.cancel_event.is_set,
+                )
+            if encoded.survivors:
+                # Reported, never assumed away: an orphaned group means the
+                # cleanup guarantee did not hold for this attempt, and that
+                # survives into the record instead of being dropped when the
+                # process context manager exits.
+                survivor_groups.extend(encoded.survivors)
+                notes.append(
+                    f"encoder process group(s) {list(encoded.survivors)} were still "
+                    "alive after teardown; resource cleanup was not clean"
                 )
 
             self._check_cancelled(job)
 
             with timed(Stage.VALIDATE_OUTPUT):
-                probe = probe_output(self.tools, produced, timeout=remaining())
+                probe = probe_output(
+                    self.tools, produced, timeout=remaining(), cancel=job.cancel_event.is_set
+                )
                 problems = validate_output(probe, request.output)
                 if problems:
                     raise OutputInvalidError(
@@ -433,6 +457,8 @@ class LocalExecutionService:
                 memory=memory,
                 frame_accounting_value=accounting,
                 device_evidence=device_evidence,
+                cleanup_survivor_groups=survivor_groups,
+                notes=notes,
             )
             return
 
@@ -455,6 +481,8 @@ class LocalExecutionService:
                 memory=memory,
                 frame_accounting_value=None,
                 device_evidence=device_evidence,
+                cleanup_survivor_groups=survivor_groups,
+                notes=notes,
             )
         finally:
             job.stage = None
@@ -512,10 +540,14 @@ class LocalExecutionService:
     @staticmethod
     def _check_cancelled(job: _Job) -> None:
         if job.cancel_event.is_set():
-            raise AdapterError("cancellation requested")
+            raise JobCancelled("cancellation requested")
 
     def _decode_anchors(
-        self, request: RenderRequest, budget_seconds: float
+        self,
+        request: RenderRequest,
+        budget_seconds: float,
+        *,
+        cancel: Callable[[], bool] | None = None,
     ) -> dict[int, NDArray[np.uint8]]:
         """Decode every anchor within the *job* deadline, not a private one.
 
@@ -537,6 +569,7 @@ class LocalExecutionService:
                 width=request.output.width,
                 height=request.output.height,
                 timeout=remaining,
+                cancel=cancel,
             )
         return frames
 

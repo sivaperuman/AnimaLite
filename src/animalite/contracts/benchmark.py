@@ -17,7 +17,7 @@ from animalite.contracts.enums import (
     RunOutcome,
 )
 from animalite.contracts.host import HostApproval, HostInventory
-from animalite.contracts.job import EnvironmentRecord, FailureRecord
+from animalite.contracts.job import EnvironmentRecord, FailureRecord, ProcessInstance
 from animalite.contracts.media import FrameAccounting
 from animalite.contracts.results import MemoryObservation, StageTiming
 
@@ -173,6 +173,24 @@ class ColdProcessEvidence(Contract):
     interpreter: str | None = None
     argv: list[str] = Field(default_factory=list)
     os_file_cache_cleared: bool = False
+    #: The child's own report of its process instance, written at startup before
+    #: any work. A pid is reused; ``(boot_id, pid, start_ticks)`` is not, so this
+    #: is what makes "a genuinely new process" checkable across two cold runs.
+    child_instance: ProcessInstance | None = None
+    parent_instance: ProcessInstance | None = None
+    #: Process groups still alive after the child was torn down. Non-empty means
+    #: the cold run leaked a process, and it is recorded rather than assumed away.
+    child_survivor_groups: list[int] = Field(default_factory=list)
+
+    @property
+    def is_distinct_process(self) -> bool:
+        """True only when child and parent are provably different instances."""
+        if self.child_instance is None or self.parent_instance is None:
+            return False
+        if not self.child_instance.is_identified:
+            return False
+        return self.child_instance.instance_key != self.parent_instance.instance_key
+
     notes: list[str] = Field(
         default_factory=lambda: [
             "Cold timing starts before the child interpreter is launched, so "
@@ -211,6 +229,10 @@ class RunRecord(Document):
     qualification_eligible_profile: bool = False
     exploratory: bool = True
     cold_process_evidence: ColdProcessEvidence | None = None
+    #: How long a failed or timed-out run took before it failed. Deliberately a
+    #: separate field from ``wall_seconds``: failure latency is diagnostic, and
+    #: must never be aggregated as if it were a successful observation.
+    failure_elapsed_seconds: float | None = Field(default=None, ge=0.0)
 
     @model_validator(mode="after")
     def _check(self) -> RunRecord:
@@ -223,6 +245,11 @@ class RunRecord(Document):
             raise ValueError(
                 f"outcome {self.outcome.value!r} must not carry wall_seconds; a "
                 "non-succeeding run contributes no latency observation"
+            )
+        if self.outcome is RunOutcome.SUCCEEDED and self.failure_elapsed_seconds is not None:
+            raise ValueError(
+                "a succeeded run must not carry failure_elapsed_seconds; its timing "
+                "belongs in wall_seconds"
             )
         return self
 

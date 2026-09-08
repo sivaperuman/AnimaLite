@@ -21,8 +21,10 @@ __all__ = [
     "AttemptRecord",
     "CancelResult",
     "EnvironmentRecord",
+    "ExecutionEnvelope",
     "FailureRecord",
     "JobStatus",
+    "ProcessInstance",
     "RenderRequest",
 ]
 
@@ -123,6 +125,12 @@ class AttemptRecord(Document):
     environment: EnvironmentRecord | None = None
     failure: FailureRecord | None = None
     progress: float = Field(default=0.0, ge=0.0, le=1.0)
+    #: Process-group ids still alive after this attempt tore its children down.
+    #: Non-empty means the cleanup guarantee did not hold, so it is recorded
+    #: rather than discarded when the process context manager exits.
+    cleanup_survivor_groups: list[int] = Field(default_factory=list)
+    #: Free-form execution observations, including cleanup and runtime notes.
+    notes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_state_consistency(self) -> AttemptRecord:
@@ -146,6 +154,67 @@ class AttemptRecord(Document):
         """Total in-boundary wall time, or ``None`` when nothing was timed."""
         timed = [s.wall_seconds for s in self.stages if s.inside_timing_boundary]
         return sum(timed) if timed else None
+
+
+class ProcessInstance(Contract):
+    """Identity of one operating-system process *instance*.
+
+    A pid alone does not identify a process: pids are reused. ``(boot_id, pid,
+    start_ticks)`` does, because start time distinguishes a recycled pid from
+    the original. That is what makes "this really was a new process" checkable
+    rather than asserted -- two process-cold runs must not share an instance
+    key.
+    """
+
+    pid: int = Field(ge=0)
+    boot_id: str | None = None
+    start_ticks: int | None = Field(default=None, ge=0)
+    interpreter: str | None = None
+
+    @property
+    def instance_key(self) -> str:
+        """Stable identity string; two distinct process instances never match."""
+        return f"{self.boot_id or 'unknown-boot'}:{self.pid}:{self.start_ticks}"
+
+    @property
+    def is_identified(self) -> bool:
+        """True when the key rests on measured start time, not on the pid alone."""
+        return self.boot_id is not None and self.start_ticks is not None
+
+
+class ExecutionEnvelope(Document):
+    """A complete, self-contained job handed to a separate interpreter.
+
+    Passing only ``engine_profile_id`` across the process boundary let the child
+    rebuild the *default* registry and silently execute a different resolved
+    profile: with an overridden ``fixture-synthetic`` registered in the parent,
+    the warm and cold runs of one plan produced different outputs while both
+    recorded success under the same planned profile.
+
+    So the resolved profile travels with the request and is re-derived and
+    re-checked on arrival. This is data, never code: no pickled registry, no
+    importable module path, and the child resolves the adapter only from its own
+    built-in allowlist by ``adapter_key``.
+    """
+
+    envelope_id: str = Field(min_length=1)
+    request: RenderRequest
+    profile: EngineProfile
+    #: ``content_digest(profile)`` computed by the sender. The receiver
+    #: recomputes it and refuses to execute on a mismatch.
+    profile_digest: str = Field(min_length=1)
+    #: Written by the child at startup, before any work, so the launcher can
+    #: tell "never started" from "started and failed".
+    process_marker_path: str | None = None
+
+    @model_validator(mode="after")
+    def _check_profile_matches_request(self) -> ExecutionEnvelope:
+        if self.profile.profile_id != self.request.engine_profile_id:
+            raise ValueError(
+                f"envelope profile {self.profile.profile_id!r} does not match the "
+                f"request's engine_profile_id {self.request.engine_profile_id!r}"
+            )
+        return self
 
 
 class JobStatus(Document):

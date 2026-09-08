@@ -15,17 +15,18 @@ from __future__ import annotations
 import contextlib
 import subprocess
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 from animalite.contracts.media import OutputSpec
 from animalite.contracts.profile import ThreadBudget
-from animalite.errors import EncoderError, JobTimeoutError
+from animalite.errors import EncoderError, JobCancelled, JobTimeoutError
 from animalite.media.ffmpeg import FFmpegTools
-from animalite.proc import ManagedProcess
+from animalite.proc import ManagedProcess, ProcessCancelled
 from animalite.resources import apply_thread_environment
 
-__all__ = ["encode_delivery_stream", "encoder_argv"]
+__all__ = ["EncodeOutcome", "encode_delivery_stream", "encoder_argv"]
 
 
 def encoder_argv(
@@ -90,6 +91,20 @@ def encoder_argv(
     ]
 
 
+@dataclass(frozen=True)
+class EncodeOutcome:
+    """What the encode actually did, including cleanup evidence.
+
+    ``survivors`` used to be discarded when the ``ManagedProcess`` context
+    manager exited, so a run that left an orphan behind looked identical to a
+    clean one. It is returned instead, and the service copies it into the
+    attempt diagnostics.
+    """
+
+    frames_written: int
+    survivors: tuple[int, ...] = ()
+
+
 def encode_delivery_stream(
     tools: FFmpegTools,
     frames: Iterable[bytes],
@@ -99,11 +114,18 @@ def encode_delivery_stream(
     thread_budget: ThreadBudget,
     timeout_seconds: float,
     stderr_path: Path | None = None,
-) -> int:
-    """Encode ``frames`` into ``destination`` and return the frames written.
+    cancel: Callable[[], bool] | None = None,
+) -> EncodeOutcome:
+    """Encode ``frames`` into ``destination`` and report what happened.
 
     Raises :class:`EncoderError` on any encoder failure. The process group is
-    always torn down, including on timeout, so no encoder is left behind.
+    always torn down, including on timeout and cancellation, so no encoder is
+    left behind.
+
+    ``cancel`` reaches *inside* the blocking pipe write and the final wait. A
+    deadline-only bound was not enough: with the default 600 s job deadline a
+    cancel against a stalled encoder was only observed when the child happened
+    to exit on its own.
     """
     tools.require()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -113,10 +135,12 @@ def encode_delivery_stream(
     env = apply_thread_environment(thread_budget)
 
     written = 0
+    survivors: tuple[int, ...] = ()
     deadline = time.monotonic() + timeout_seconds
-    with ManagedProcess(argv, env=env, stderr_path=stderr_path) as proc:
+    with ManagedProcess(argv, env=env, stderr_path=stderr_path, cancel=cancel) as proc:
         try:
             for frame in frames:
+                proc.raise_if_cancelled(f"producing delivery frame {written} for")
                 # The deadline is checked once per delivery frame, so it also
                 # bounds slow upstream synthesis: the adapter generator is pulled
                 # by this loop. Granularity is therefore one frame, not
@@ -147,6 +171,12 @@ def encode_delivery_stream(
                 f"({timeout_seconds:.3f}s total); its process group was killed. "
                 f"stderr: {proc.stderr_text()}"
             ) from exc
+        except ProcessCancelled as exc:
+            raise JobCancelled(
+                f"cancelled after {written} of {output.delivery_frame_count} delivery "
+                f"frames; the encoder process group was torn down and no output was "
+                f"published. {exc}"
+            ) from exc
         except TimeoutError as exc:
             raise JobTimeoutError(
                 f"job deadline of {timeout_seconds:.3f}s elapsed while writing frame "
@@ -165,10 +195,13 @@ def encode_delivery_stream(
             raise EncoderError(
                 f"encoder exited {code} after {written} frames; stderr: {proc.stderr_text()}"
             )
+        survivors = tuple(proc.survivors)
 
     if written != output.delivery_frame_count:
         raise EncoderError(
             f"wrote {written} delivery frames; the output contract requires "
             f"{output.delivery_frame_count}"
         )
-    return written
+    # Read after the context manager exits: close() runs the final group sweep,
+    # so this is the authoritative cleanup result rather than a mid-run guess.
+    return EncodeOutcome(frames_written=written, survivors=survivors or tuple(proc.survivors))

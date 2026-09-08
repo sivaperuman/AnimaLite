@@ -31,8 +31,10 @@ from animalite.contracts.job import (
     AttemptRecord,
     CancelResult,
     EnvironmentRecord,
+    ExecutionEnvelope,
     FailureRecord,
     JobStatus,
+    ProcessInstance,
     RenderRequest,
 )
 from animalite.contracts.media import (
@@ -80,6 +82,7 @@ __all__ = [
     "EngineProfile",
     "EnvironmentRecord",
     "EvidenceStatus",
+    "ExecutionEnvelope",
     "FailureCategory",
     "FailureRecord",
     "FrameAccounting",
@@ -95,6 +98,7 @@ __all__ = [
     "MotionTier",
     "OutputManifest",
     "OutputSpec",
+    "ProcessInstance",
     "QualificationVerdict",
     "RenderRequest",
     "Resolution",

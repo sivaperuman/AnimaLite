@@ -7,14 +7,15 @@ are returned as ``numpy`` arrays shaped ``(height, width, 3)``, ``uint8``.
 
 from __future__ import annotations
 
-import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
 
-from animalite.errors import AdapterError, JobTimeoutError
+from animalite.errors import AdapterError, JobCancelled, JobTimeoutError
 from animalite.media.ffmpeg import FFmpegTools
+from animalite.proc import ProcessCancelled, run_capture
 
 __all__ = ["decode_image_rgb24"]
 
@@ -26,11 +27,16 @@ def decode_image_rgb24(
     width: int,
     height: int,
     timeout: float = 60.0,
+    cancel: Callable[[], bool] | None = None,
 ) -> NDArray[np.uint8]:
     """Decode one image to RGB24, scaling to ``width`` x ``height`` on the CPU.
 
     The scaler is pinned (``flags=bicubic``, full-range RGB output) so anchor
     normalization is repeatable across runs (MR-009).
+
+    ``cancel`` is checked inside the decode, not only around it, so a cancel
+    request during a slow or stalled decode is acted on rather than waiting out
+    the job deadline.
     """
     argv = [
         tools.ffmpeg_path,
@@ -51,18 +57,19 @@ def decode_image_rgb24(
         "-",
     ]
     try:
-        completed = subprocess.run(  # noqa: S603 - argv list, no shell
-            argv,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
+        completed = run_capture(argv, timeout=timeout, cancel=cancel)
+    except TimeoutError as exc:
         # Classified as a timeout, not an adapter fault: the caller passes the
         # remaining *job* deadline, so expiry here is the deadline firing.
         raise JobTimeoutError(
             f"deadline elapsed after {timeout:.3f}s while decoding anchor {path}"
         ) from exc
+    except ProcessCancelled as exc:
+        raise JobCancelled(f"cancelled while decoding anchor {path}: {exc}") from exc
+    if completed.survivors:
+        raise AdapterError(
+            f"decoding anchor {path} left process group(s) {completed.survivors} alive"
+        )
 
     expected = width * height * 3
     if completed.returncode != 0 or len(completed.stdout) != expected:

@@ -7,6 +7,7 @@ import json
 import pytest
 
 from animalite.cli import build_parser, main
+from animalite.contracts.assets import AnchorSet
 from animalite.media.ffmpeg import FFmpegTools
 
 TOOLS = FFmpegTools.discover()
@@ -47,9 +48,21 @@ def test_doctor_reports_unavailable_tooling_with_a_distinct_exit_code(capsys, mo
 
 
 def test_render_requires_an_explicit_profile():
+    """Rendering never selects an engine implicitly.
+
+    `--profile` is no longer an argparse-level requirement, because an
+    `--envelope` carries the resolved profile instead. The rule itself is
+    unchanged and is enforced where the request is built, so this asserts the
+    refusal rather than the argparse mechanics that used to produce it.
+    """
+    from animalite.cli import _request
+    from animalite.errors import ValidationRejected
+
     parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["render", "--anchors", "anchors.json"])
+    args = parser.parse_args(["render", "--anchors", "anchors.json"])
+    assert args.profile is None
+    with pytest.raises(ValidationRejected, match="--profile is required"):
+        _request(args)
 
 
 def test_profiles_reports_the_fixture_as_non_qualifying(capsys):
@@ -128,3 +141,75 @@ def test_render_writes_a_labelled_manifest(tmp_path, capsys):
     assert payload["output"]["probe"]["counted_frames"] == 144
     # Diagnostics stay off stdout so the JSON stream is safe to pipe.
     assert "not evidence for MR-018" in captured.err
+
+
+# --- R3 regression: the execution envelope carries and re-checks identity ----
+
+
+def _envelope_payload(tmp_path, *, profile=None, digest=None):
+    from animalite.adapters.registry import default_registry
+    from animalite.contracts.base import content_digest
+    from animalite.contracts.job import ExecutionEnvelope
+    from animalite.contracts.media import P_L_FINAL_OUTPUT
+    from tests.conftest import make_request, synthetic_anchor
+
+    resolved = profile or default_registry().profile("fixture-synthetic")
+    anchors = AnchorSet(
+        anchors=[
+            synthetic_anchor(tmp_path, animation_index=0, anchor_id="s"),
+            synthetic_anchor(tmp_path, animation_index=71, anchor_id="e"),
+        ]
+    )
+    envelope = ExecutionEnvelope(
+        envelope_id="cli-envelope",
+        request=make_request(anchors, output=P_L_FINAL_OUTPUT),
+        profile=resolved,
+        profile_digest=digest or content_digest(resolved),
+    )
+    path = tmp_path / "envelope.json"
+    path.write_text(envelope.model_dump_json(indent=2), encoding="utf-8")
+    return path, envelope
+
+
+def test_an_envelope_supplies_the_profile_the_caller_resolved(tmp_path):
+    """The envelope's profile replaces a same-id default rather than losing to it."""
+    from animalite.adapters.registry import default_registry
+    from animalite.cli import _registry, build_parser
+
+    overridden = (
+        default_registry()
+        .profile("fixture-synthetic")
+        .model_copy(update={"parameters": {"ease": "linear", "drift_pixels": 12.0}})
+    )
+    path, _ = _envelope_payload(tmp_path, profile=overridden)
+    args = build_parser().parse_args(["render", "--envelope", str(path)])
+    resolved = _registry(args).profile("fixture-synthetic")
+    assert resolved.parameters == {"ease": "linear", "drift_pixels": 12.0}
+
+
+def test_an_envelope_whose_digest_does_not_match_its_profile_is_refused(tmp_path):
+    """A profile that no longer hashes to its declared identity must not execute."""
+    from animalite.cli import _envelope, build_parser
+    from animalite.errors import ValidationRejected
+
+    path, _ = _envelope_payload(tmp_path, digest="sha256:" + "0" * 64)
+    args = build_parser().parse_args(["render", "--envelope", str(path)])
+    with pytest.raises(ValidationRejected, match="does not match its declared identity"):
+        _envelope(args)
+
+
+def test_an_envelope_cannot_introduce_an_adapter(tmp_path):
+    """An envelope names an adapter key; it can never supply an implementation."""
+    from animalite.adapters.registry import default_registry
+    from animalite.cli import _registry, build_parser
+    from animalite.errors import ProfileNotFoundError
+
+    smuggled = (
+        default_registry()
+        .profile("fixture-synthetic")
+        .model_copy(update={"adapter_key": "not-registered-anywhere"})
+    )
+    path, _ = _envelope_payload(tmp_path, profile=smuggled)
+    args = build_parser().parse_args(["render", "--envelope", str(path)])
+    with pytest.raises(ProfileNotFoundError, match="not-registered-anywhere"):
+        _registry(args)

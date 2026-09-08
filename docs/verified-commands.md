@@ -39,10 +39,10 @@ Resolved exactly the pinned set: `animalite 0.1.0`, `pydantic 2.13.5`,
 | Command | Result |
 | --- | --- |
 | `ruff check --no-cache .` | `All checks passed!` — exit 0 |
-| `ruff format --no-cache --check .` | `83 files already formatted` — exit 0 |
-| `mypy` (with `.mypy_cache` removed) | `Success: no issues found in 56 source files` — exit 0 (strict mode for `src/`) |
-| `python -m pytest -m "not slow" -q -p no:cacheprovider` | `122 passed, 18 deselected in 11.08s` — exit 0 |
-| `python -m pytest -q -p no:cacheprovider` | `140 passed in 43.95s` — exit 0 |
+| `ruff format --no-cache --check .` | `85 files already formatted` — exit 0 |
+| `mypy` (with `.mypy_cache` removed) | `Success: no issues found in 57 source files` — exit 0 (strict mode for `src/`) |
+| `python -m pytest -m "not slow" -q -p no:cacheprovider` | `172 passed, 31 deselected in 51.09s` — exit 0 |
+| `python -m pytest -q -p no:cacheprovider` | `203 passed in 125.84s` — exit 0 |
 
 > **Why the caches are disabled here.** The first CI run failed on `ruff check`
 > with four `I001` import-order findings that a local `ruff check .` had just
@@ -191,6 +191,27 @@ once per delivery frame — see the note on granularity in `RenderRequest`.)
 Automated coverage of the same behaviour, including adapter crashes,
 short/oversized adapter streams, wrong frame geometry, cancellation, retry
 linkage and attempt immutability, is in `tests/test_execution_failures.py`.
+
+## 8b. Second-round repairs (R3, R4, R5) — before and after
+
+Each defect was reproduced on `8ba39f5` before it was fixed, then re-measured on
+the same machine. The reproduction scripts drive the public API only.
+
+| Behaviour | Before | After |
+| --- | --- | --- |
+| Cold run of a plan whose parent registered an **overridden** `fixture-synthetic` (`ease=linear, drift_pixels=12`) | warm `sha256:5fb314b0…`, cold `sha256:65057667…` — the *default* profile's output, both recorded `succeeded` | warm and cold both `sha256:5fb314b0…` |
+| `ColdProcessEvidence.child_pid` | `None` on every run (`subprocess.CompletedProcess` has no `pid`; the `hasattr` fallback masked it) | real pids, e.g. `21591`, `22612`, `22720`, `22899`, each with a distinct `(boot_id, pid, start_ticks)` marker and `survivors=[]` |
+| Cold child that hits its job deadline (exit 1 with a valid failed record on stdout) | `outcome=failed`, `attempt_id=None`, `category=internal_error`, no diagnostics link | `outcome=timeout`, real `attempt_id`, `category=timeout`, diagnostics path present, `failure_elapsed_seconds` recorded separately from `wall_seconds` |
+| `subprocess.TimeoutExpired` injected at the cold launch, 2 planned runs | escaped `run()`; **0 of 2** ledger rows | contained per run; **2 of 2** ledger rows, plan continues |
+| `cancel()` at 0.30 s against a child that ignores stdin for 3 s, 600 s job deadline | returned at **3.010 s**, as `BrokenPipeError` when the child exited on its own | returned at **0.324 s**, as `ProcessCancelled`, group torn down |
+| `validate` with `controls={"drift_pixels": "not-a-number"}` | `valid=True`, **zero errors**; later raised inside synthesis | `valid=False`, `VAL-CONTROL-VALUE-INVALID` at `controls.drift_pixels` |
+| Same, but the bad value is a *profile default* with no override | not checked at all | `valid=False`, attributed to `engine_profile.parameters.drift_pixels` |
+| Same bad default **with** a valid override | not checked at all | `valid=True` — synthesis would never have read that default |
+
+The replaced timing test is worth naming: `min(cold) > min(warm)` was asserted as
+a correctness invariant. It is not one on a shared runner, and it can fail from
+noise alone. Timer placement is now proved by injecting a known delay at the
+launch boundary and requiring the recorded cold wall time to have absorbed it.
 
 ## 9. Benchmark harness against the fixtures
 
