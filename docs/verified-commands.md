@@ -38,11 +38,22 @@ Resolved exactly the pinned set: `animalite 0.1.0`, `pydantic 2.13.5`,
 
 | Command | Result |
 | --- | --- |
-| `ruff check .` | `All checks passed!` — exit 0 |
-| `ruff format --check .` | `82 files already formatted` — exit 0 |
-| `mypy` | `Success: no issues found in 56 source files` — exit 0 (strict mode for `src/`) |
-| `python -m pytest -m "not slow" -q` | `122 passed, 18 deselected in 10.94s` — exit 0 |
-| `python -m pytest -q` | `140 passed in 43.69s` — exit 0 |
+| `ruff check --no-cache .` | `All checks passed!` — exit 0 |
+| `ruff format --no-cache --check .` | `83 files already formatted` — exit 0 |
+| `mypy` (with `.mypy_cache` removed) | `Success: no issues found in 56 source files` — exit 0 (strict mode for `src/`) |
+| `python -m pytest -m "not slow" -q -p no:cacheprovider` | `122 passed, 18 deselected in 11.08s` — exit 0 |
+| `python -m pytest -q -p no:cacheprovider` | `140 passed in 43.95s` — exit 0 |
+
+> **Why the caches are disabled here.** The first CI run failed on `ruff check`
+> with four `I001` import-order findings that a local `ruff check .` had just
+> reported clean. Cause: adding `tests/__init__.py` (needed for mypy's module
+> mapping) reclassified `tests` from third-party to first-party for isort, but a
+> stale `.ruff_cache` reused the earlier verdict for those four files. Fixed by
+> declaring `known-first-party = ["animalite", "tests"]` explicitly in
+> `pyproject.toml` so the classification no longer depends on inference or cache
+> state, and by re-running every check with its cache disabled — which is what
+> this table now records. CI checks out fresh, so it never saw a stale cache;
+> the local run did.
 
 ## 3. Entry points
 

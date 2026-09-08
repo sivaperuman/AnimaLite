@@ -6,7 +6,6 @@ import json
 
 import pytest
 from pydantic import ValidationError
-from tests.conftest import make_request, synthetic_anchor
 
 from animalite import SCHEMA_VERSION
 from animalite.contracts.assets import AnchorSet
@@ -21,6 +20,7 @@ from animalite.contracts.estimate import ResourceEstimate, ReusableSetupUnit
 from animalite.contracts.media import P_L_FINAL_OUTPUT, FrameAccounting
 from animalite.contracts.profile import ThreadBudget
 from animalite.contracts.results import DecodeProbe, MemoryObservation, OutputManifest
+from tests.conftest import make_request, synthetic_anchor
 
 
 def test_documents_carry_the_schema_version():

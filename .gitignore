@@ -38,10 +38,14 @@ models/
 *.safetensors
 .cache/
 
-# Benchmark outputs and local evidence bundles
+# Benchmark outputs and local evidence bundles.
+# Versioned manifests, host records, target sets and evidence *templates* under
+# benchmarks/ are tracked; only run outputs and collected evidence are ignored.
 benchmarks/results/
 benchmarks/runs/
-evidence/
+/evidence/
+benchmarks/evidence/*
+!benchmarks/evidence/*.template.json
 
 # Editors and OS
 .idea/

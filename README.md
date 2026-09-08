@@ -112,7 +112,7 @@ src/animalite/adapters/    motion adapter protocol + fixture (non-learned) adapt
 src/animalite/media/       ffmpeg discovery, cadence, streaming encode, probe validation
 src/animalite/bench/       benchmark runner, ledger, statistics, eligibility evaluator
 src/animalite/hostinfo/    host and tool inventory
-benchmarks/                dataset manifests, host records, engine profiles
+benchmarks/                dataset manifests, host records, target sets, evidence bundles
 docs/requirements/         the v0.12 source document and a labelled CPU-stage extract
 docs/decisions/            durable implementation decisions
 docs/verification/         requirement / AT / evidence mapping

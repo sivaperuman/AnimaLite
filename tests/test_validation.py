@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-from tests.conftest import make_request, synthetic_anchor
 
 from animalite.adapters.registry import default_registry
 from animalite.contracts.assets import AnchorSet
@@ -13,6 +12,7 @@ from animalite.contracts.media import P_L_FINAL_OUTPUT, CadencePolicy, OutputSpe
 from animalite.core.validation import validate_request
 from animalite.errors import CodeVAL
 from animalite.media.ffmpeg import FFmpegTools
+from tests.conftest import make_request, synthetic_anchor
 
 TOOLS = FFmpegTools.discover()
 

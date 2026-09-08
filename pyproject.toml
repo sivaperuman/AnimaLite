@@ -69,6 +69,12 @@ ignore = [
   "SIM108", # ternaries are not always clearer here
 ]
 
+[tool.ruff.lint.isort]
+# Declared explicitly rather than inferred. Inference depends on whether
+# `tests/__init__.py` exists, so adding it (needed for mypy's module mapping)
+# silently reclassified `tests` from third-party to first-party.
+known-first-party = ["animalite", "tests"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S603", "S607"]
 

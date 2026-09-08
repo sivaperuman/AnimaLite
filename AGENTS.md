@@ -77,6 +77,10 @@ python3 -m venv .venv
 .venv/bin/python -m pytest -m "not slow"      # contract, failure-path, statistics
 .venv/bin/python -m pytest                    # adds tiny end-to-end media tests
 
+# Before pushing, re-run lint with its cache disabled. CI checks out fresh, so a
+# stale .ruff_cache can hide a finding locally that CI will report:
+.venv/bin/ruff check --no-cache . && .venv/bin/ruff format --no-cache --check .
+
 # Host inventory
 .venv/bin/animalite doctor
 .venv/bin/animalite doctor --json

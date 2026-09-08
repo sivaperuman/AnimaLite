@@ -5,7 +5,6 @@ from __future__ import annotations
 from fractions import Fraction
 
 import pytest
-from tests.conftest import synthetic_anchor
 
 from animalite.contracts.assets import AnchorSet
 from animalite.contracts.enums import CadenceConversion
@@ -22,6 +21,7 @@ from animalite.media.cadence import (
     expand_to_delivery,
     frame_accounting,
 )
+from tests.conftest import synthetic_anchor
 
 
 def test_core_output_is_exactly_six_seconds():
