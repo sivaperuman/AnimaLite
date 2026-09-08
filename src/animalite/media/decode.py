@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from animalite.errors import AdapterError, JobCancelled, JobTimeoutError
+from animalite.errors import AdapterError, CleanupFailed, JobCancelled, JobTimeoutError
 from animalite.media.ffmpeg import FFmpegTools
 from animalite.proc import ProcessCancelled, run_capture
 
@@ -60,15 +60,22 @@ def decode_image_rgb24(
         completed = run_capture(argv, timeout=timeout, cancel=cancel)
     except TimeoutError as exc:
         # Classified as a timeout, not an adapter fault: the caller passes the
-        # remaining *job* deadline, so expiry here is the deadline firing.
+        # remaining *job* deadline, so expiry here is the deadline firing. The
+        # survivor groups ride along: replacing the exception must not discard
+        # the cleanup evidence it carries.
         raise JobTimeoutError(
-            f"deadline elapsed after {timeout:.3f}s while decoding anchor {path}"
+            f"deadline elapsed after {timeout:.3f}s while decoding anchor {path}",
+            survivors=getattr(exc, "survivors", ()),
         ) from exc
     except ProcessCancelled as exc:
-        raise JobCancelled(f"cancelled while decoding anchor {path}: {exc}") from exc
+        raise JobCancelled(
+            f"cancelled while decoding anchor {path}: {exc}", survivors=exc.survivors
+        ) from exc
     if completed.survivors:
-        raise AdapterError(
-            f"decoding anchor {path} left process group(s) {completed.survivors} alive"
+        raise CleanupFailed(
+            f"decoding anchor {path} left process group(s) "
+            f"{list(completed.survivors)} alive after teardown",
+            survivors=completed.survivors,
         )
 
     expected = width * height * 3

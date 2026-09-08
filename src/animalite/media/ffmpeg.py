@@ -15,7 +15,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from animalite.contracts.base import sha256_file
 from animalite.contracts.host import ToolIdentity
+from animalite.contracts.job import MediaToolSelection
 from animalite.errors import ToolUnavailableError
 
 __all__ = ["LICENSE_RELEVANT_FLAGS", "FFmpegTools", "probe_tool"]
@@ -93,6 +95,16 @@ def probe_tool(name: str, env_var: str, *, timeout: float = 20.0) -> ToolIdentit
     )
 
 
+def _hashed(tool: ToolIdentity) -> ToolIdentity:
+    """Fill in ``content_hash`` for a resolved executable, best effort."""
+    if tool.content_hash or not tool.path:
+        return tool
+    try:
+        return tool.model_copy(update={"content_hash": sha256_file(tool.path)})
+    except OSError:  # pragma: no cover - unreadable executable
+        return tool
+
+
 @dataclass(frozen=True)
 class FFmpegTools:
     """A resolved ffmpeg/ffprobe pair."""
@@ -136,6 +148,23 @@ class FFmpegTools:
         path = self.require().ffprobe.path
         assert path is not None
         return path
+
+    def selection(self) -> MediaToolSelection:
+        """The structured pair, for exact comparison across a process boundary."""
+        return MediaToolSelection(ffmpeg=self.ffmpeg, ffprobe=self.ffprobe)
+
+    def with_content_hashes(self) -> FFmpegTools:
+        """Return the pair with executable content hashes filled in.
+
+        Hashing is deferred to here rather than done in `probe_tool` because
+        `doctor` and the pending-test policy probe tools constantly and do not
+        need to read tens of megabytes; a job that must *bind* the executable
+        identity across a process boundary does.
+        """
+        return FFmpegTools(
+            ffmpeg=_hashed(self.ffmpeg),
+            ffprobe=_hashed(self.ffprobe),
+        )
 
     def identity_map(self) -> dict[str, str]:
         """Compact identity strings for the attempt environment record."""

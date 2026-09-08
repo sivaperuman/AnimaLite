@@ -233,6 +233,11 @@ class RunRecord(Document):
     #: separate field from ``wall_seconds``: failure latency is diagnostic, and
     #: must never be aggregated as if it were a successful observation.
     failure_elapsed_seconds: float | None = Field(default=None, ge=0.0)
+    #: Process groups still alive after this run tore its children down. Copied
+    #: from the attempt so the cleanup failure is visible in the ledger rather
+    #: than only in the attempt directory.
+    cleanup_survivor_groups: list[int] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check(self) -> RunRecord:
@@ -250,6 +255,12 @@ class RunRecord(Document):
             raise ValueError(
                 "a succeeded run must not carry failure_elapsed_seconds; its timing "
                 "belongs in wall_seconds"
+            )
+        if self.outcome is RunOutcome.SUCCEEDED and self.cleanup_survivor_groups:
+            raise ValueError(
+                f"a succeeded run must not carry surviving process groups "
+                f"{self.cleanup_survivor_groups}; a leaked process is a cleanup "
+                "failure, not a clean run"
             )
         return self
 

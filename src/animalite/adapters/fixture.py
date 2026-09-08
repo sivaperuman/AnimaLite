@@ -141,18 +141,21 @@ def _validate_drift(value: float | int | str | bool, output: OutputSpec) -> list
                 f"Pass a finite number of pixels {bound}.",
             )
         ]
-    numeric = float(value)
-    if math.isnan(numeric) or math.isinf(numeric):
+    if isinstance(value, float) and not math.isfinite(value):
         return [
             issue(
                 f"drift_pixels must be finite; got {value!r}",
                 f"Pass a finite number of pixels {bound}.",
             )
         ]
-    if abs(numeric) >= output.width:
+    # Magnitude is compared on the value as given. Converting first was wrong:
+    # a Python int is unbounded, so `float(10**1000)` raises OverflowError and
+    # validation escaped as an exception instead of returning a report. Every
+    # contract-valid control value must produce a validation *result*.
+    if abs(value) >= output.width:
         return [
             issue(
-                f"drift_pixels {numeric} is at least the output width "
+                f"drift_pixels {value} is at least the output width "
                 f"({output.width}px), which would shift every frame off-canvas",
                 f"Pass a finite number of pixels {bound}.",
             )

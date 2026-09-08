@@ -409,11 +409,39 @@ def _registry(args: argparse.Namespace | None = None) -> Registry:
     return registry
 
 
+def _tools(args: argparse.Namespace) -> FFmpegTools | None:
+    """Resolve the media tools this invocation must use.
+
+    With an envelope, the expected pair is authoritative: the paths arrive via
+    ANIMALITE_FFMPEG/ANIMALITE_FFPROBE, are probed here, and any difference in
+    path, version, build configuration or content hash is refused. Rediscovering
+    freely is what let a process-cold child execute a different FFmpeg than the
+    warm run of the same plan while both reported success.
+    """
+    envelope = _envelope(args)
+    if envelope is None or envelope.expected_tools is None:
+        return None
+    resolved = FFmpegTools.discover().with_content_hashes()
+    if not resolved.available:
+        raise ValidationRejected(
+            f"the execution envelope requires specific media tools but none are "
+            f"usable here: {resolved.unavailable_reason}"
+        )
+    problems = envelope.expected_tools.mismatches(resolved.selection())
+    if problems:
+        raise ValidationRejected(
+            "the media tools resolved here are not the ones this job was built "
+            "for, so the run would not measure the planned configuration: " + "; ".join(problems)
+        )
+    return resolved
+
+
 def _service(args: argparse.Namespace) -> LocalExecutionService:
     workspace = Path(getattr(args, "workspace", None) or "work/ws")
     return LocalExecutionService(
         workspace,
         registry=_registry(args),
+        tools=_tools(args),
         logger=StructuredLogger(enabled=getattr(args, "verbose", False)),
     )
 

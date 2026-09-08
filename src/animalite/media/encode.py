@@ -148,11 +148,13 @@ def encode_delivery_stream(
                 # is not interrupted here. Package B's out-of-process worker is
                 # where a hard bound belongs.
                 if time.monotonic() > deadline:
+                    proc.terminate_tree()
                     raise JobTimeoutError(
                         f"job deadline of {timeout_seconds:.3f}s elapsed after "
                         f"{written} of {output.delivery_frame_count} delivery frames; "
                         "the encoder process group was torn down and no output was "
-                        "published"
+                        "published",
+                        survivors=tuple(proc.survivors),
                     )
                 if len(frame) != frame_bytes:
                     raise EncoderError(
@@ -169,19 +171,22 @@ def encode_delivery_stream(
             raise JobTimeoutError(
                 f"the encoder did not exit within the remaining job deadline "
                 f"({timeout_seconds:.3f}s total); its process group was killed. "
-                f"stderr: {proc.stderr_text()}"
+                f"stderr: {proc.stderr_text()}",
+                survivors=tuple(proc.survivors),
             ) from exc
         except ProcessCancelled as exc:
             raise JobCancelled(
                 f"cancelled after {written} of {output.delivery_frame_count} delivery "
                 f"frames; the encoder process group was torn down and no output was "
-                f"published. {exc}"
+                f"published. {exc}",
+                survivors=exc.survivors or tuple(proc.survivors),
             ) from exc
         except TimeoutError as exc:
             raise JobTimeoutError(
                 f"job deadline of {timeout_seconds:.3f}s elapsed while writing frame "
                 f"{written} of {output.delivery_frame_count} to the encoder; its "
-                f"process group was torn down and no output was published. {exc}"
+                f"process group was torn down and no output was published. {exc}",
+                survivors=getattr(exc, "survivors", ()) or tuple(proc.survivors),
             ) from exc
         except BrokenPipeError as exc:
             with contextlib.suppress(subprocess.TimeoutExpired):

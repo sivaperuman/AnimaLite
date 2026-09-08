@@ -55,6 +55,7 @@ from animalite.core.validation import validate_request
 from animalite.errors import (
     AdapterError,
     AnimaLiteError,
+    CleanupFailed,
     JobCancelled,
     JobTimeoutError,
     OutputInvalidError,
@@ -341,7 +342,21 @@ class LocalExecutionService:
         deadline = time.monotonic() + request.timeout_seconds
 
         def remaining() -> float:
-            return max(0.1, deadline - time.monotonic())
+            """Time left on the job deadline, or a timeout if there is none.
+
+            The old ``max(0.1, ...)`` floor renewed a 100 ms allowance to every
+            subsequent operation, so an expired deadline still launched the next
+            decode, encode or probe. An expired deadline now stops the pipeline
+            before another native child is started.
+            """
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise JobTimeoutError(
+                    f"the job deadline of {request.timeout_seconds:.3f}s expired during "
+                    f"{job.stage.value if job.stage else 'execution'}; no further work "
+                    "was started and nothing was published"
+                )
+            return left
 
         def timed(stage: Stage) -> _StageTimer:
             job.stage = stage
@@ -403,14 +418,15 @@ class LocalExecutionService:
                     cancel=job.cancel_event.is_set,
                 )
             if encoded.survivors:
-                # Reported, never assumed away: an orphaned group means the
-                # cleanup guarantee did not hold for this attempt, and that
-                # survives into the record instead of being dropped when the
-                # process context manager exits.
-                survivor_groups.extend(encoded.survivors)
-                notes.append(
+                # A leaked encoder is a failed attempt, not a note on a
+                # successful one. It still holds CPU, memory and descriptors, so
+                # continuing to probe and publish would report a clean run that
+                # was not clean.
+                raise CleanupFailed(
                     f"encoder process group(s) {list(encoded.survivors)} were still "
-                    "alive after teardown; resource cleanup was not clean"
+                    "alive after teardown; the cleanup guarantee did not hold, so "
+                    "this attempt publishes nothing",
+                    survivors=encoded.survivors,
                 )
 
             self._check_cancelled(job)
@@ -463,6 +479,16 @@ class LocalExecutionService:
             return
 
         except BaseException as exc:
+            # Cleanup evidence rides on the exception, because a raised error
+            # cannot return a capture result -- and timeout and cancellation are
+            # exactly where a leaked process is most likely.
+            leaked = tuple(getattr(exc, "survivors", ()))
+            if leaked:
+                survivor_groups.extend(leaked)
+                notes.append(
+                    f"process group(s) {list(leaked)} were still alive after "
+                    "teardown; resource cleanup was not clean"
+                )
             state, failure = self._classify(job, exc, dirs)
             memory = sampler.observe()
             logger.emit(

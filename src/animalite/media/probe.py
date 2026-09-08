@@ -17,7 +17,12 @@ from pathlib import Path
 
 from animalite.contracts.media import OutputSpec
 from animalite.contracts.results import DecodeProbe
-from animalite.errors import JobCancelled, JobTimeoutError, OutputInvalidError
+from animalite.errors import (
+    CleanupFailed,
+    JobCancelled,
+    JobTimeoutError,
+    OutputInvalidError,
+)
 from animalite.media.ffmpeg import FFmpegTools
 from animalite.proc import ProcessCancelled, run_capture
 
@@ -65,13 +70,18 @@ def probe_output(
     except TimeoutError as exc:
         raise JobTimeoutError(
             f"deadline elapsed after {timeout:.3f}s while decode-counting {path}; "
-            f"the probe process group was torn down and nothing was published"
+            f"the probe process group was torn down and nothing was published",
+            survivors=getattr(exc, "survivors", ()),
         ) from exc
     except ProcessCancelled as exc:
-        raise JobCancelled(f"cancelled while decode-counting {path}: {exc}") from exc
+        raise JobCancelled(
+            f"cancelled while decode-counting {path}: {exc}", survivors=exc.survivors
+        ) from exc
     if completed.survivors:
-        raise OutputInvalidError(
-            f"probing {path} left process group(s) {completed.survivors} alive"
+        raise CleanupFailed(
+            f"probing {path} left process group(s) {list(completed.survivors)} alive "
+            "after teardown",
+            survivors=completed.survivors,
         )
     if completed.returncode != 0:
         raise OutputInvalidError(

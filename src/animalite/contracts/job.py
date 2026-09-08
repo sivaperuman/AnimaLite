@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 from animalite.contracts.assets import AnchorSet
 from animalite.contracts.base import Contract, Document, content_digest
 from animalite.contracts.enums import FailureCategory, JobState
+from animalite.contracts.host import ToolIdentity
 from animalite.contracts.media import FrameAccounting, OutputSpec
 from animalite.contracts.profile import EngineProfile
 from animalite.contracts.results import (
@@ -24,6 +25,7 @@ __all__ = [
     "ExecutionEnvelope",
     "FailureRecord",
     "JobStatus",
+    "MediaToolSelection",
     "ProcessInstance",
     "RenderRequest",
 ]
@@ -68,6 +70,48 @@ class RenderRequest(Document):
         return content_digest(payload)
 
 
+class MediaToolSelection(Contract):
+    """The exact ffmpeg/ffprobe pair a job is expected to execute with.
+
+    Passing only the *request* across the process boundary let the child
+    rediscover its own tools: with the parent holding injected identities, warm
+    ran under those and cold silently ran under the host-discovered FFmpeg,
+    both reporting success under one plan. Equal output there was incidental --
+    the paths happened to be the same binaries.
+    """
+
+    ffmpeg: ToolIdentity
+    ffprobe: ToolIdentity
+
+    def mismatches(self, other: MediaToolSelection) -> list[str]:
+        """Human-readable differences, empty when the two selections agree.
+
+        Content hash is compared when both sides have one; a missing hash is
+        reported as unverifiable rather than quietly treated as a match.
+        """
+        problems: list[str] = []
+        for name in ("ffmpeg", "ffprobe"):
+            expected: ToolIdentity = getattr(self, name)
+            actual: ToolIdentity = getattr(other, name)
+            for field in ("path", "version", "build_configuration"):
+                want, got = getattr(expected, field), getattr(actual, field)
+                if want != got:
+                    problems.append(f"{name}.{field}: expected {want!r}, executed {got!r}")
+            if expected.content_hash and actual.content_hash:
+                if expected.content_hash != actual.content_hash:
+                    problems.append(
+                        f"{name}.content_hash: expected {expected.content_hash}, "
+                        f"executed {actual.content_hash}"
+                    )
+            elif expected.content_hash or actual.content_hash:
+                problems.append(
+                    f"{name}.content_hash: only one side recorded a hash "
+                    f"(expected {expected.content_hash!r}, executed {actual.content_hash!r}), "
+                    "so the executable identity is unverified"
+                )
+        return problems
+
+
 class EnvironmentRecord(Document):
     """Reproducibility inputs pinned per attempt (handoff rule 8)."""
 
@@ -82,6 +126,10 @@ class EnvironmentRecord(Document):
     tool_identities: dict[str, str] = Field(default_factory=dict)
     dependency_lock_digest: str | None = None
     cpu_flags_recorded: list[str] = Field(default_factory=list)
+    #: The media tools this attempt actually executed with, structured so a
+    #: launcher can compare them exactly. `tool_identities` stays as the compact
+    #: human-readable form.
+    media_tools: MediaToolSelection | None = None
 
 
 class FailureRecord(Contract):
@@ -206,6 +254,10 @@ class ExecutionEnvelope(Document):
     #: Written by the child at startup, before any work, so the launcher can
     #: tell "never started" from "started and failed".
     process_marker_path: str | None = None
+    #: The media tools the sender resolved. The child verifies the tools it is
+    #: about to run against this and refuses a mismatch, and the parent checks
+    #: the identities the child actually recorded.
+    expected_tools: MediaToolSelection | None = None
 
     @model_validator(mode="after")
     def _check_profile_matches_request(self) -> ExecutionEnvelope:

@@ -33,9 +33,12 @@ from types import TracebackType
 from typing import IO
 
 __all__ = [
+    "TEARDOWN_BUDGET_SECONDS",
     "CaptureResult",
     "ManagedProcess",
     "ProcessCancelled",
+    "ProcessFailure",
+    "ProcessTimeout",
     "process_alive",
     "run_capture",
     "set_non_blocking",
@@ -48,16 +51,48 @@ _POSIX = os.name == "posix"
 #: observed promptly, large enough not to spin.
 _POLL_SECONDS = 0.02
 
-#: Floor for the final exit-status wait once the child's pipes are at EOF.
-#: Collecting the status of a process that has already finished is not work the
-#: deadline should be able to fail.
-_REAP_SECONDS = 0.25
+#: Total teardown budget: the whole of SIGTERM, the wait for it, SIGKILL, the
+#: reap and the group sweep come out of this one allowance. It used to be a
+#: *per-phase* grace, so `terminate_tree()` could spend it several times over --
+#: measured, `timeout=0.3, grace=1.0` returned at 1.310 s.
+TEARDOWN_BUDGET_SECONDS = 5.0
 
 
-class ProcessCancelled(Exception):
+class ProcessFailure(Exception):
+    """A child operation that ended badly, carrying its cleanup evidence.
+
+    An exception cannot return a :class:`CaptureResult`, so survivor groups
+    computed during teardown used to be discarded the moment one propagated --
+    the very paths (timeout, cancellation) where a leaked process is most
+    likely. The evidence rides on the exception instead, and every wrapper is
+    responsible for carrying it forward rather than replacing it.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        pid: int | None = None,
+        elapsed_seconds: float | None = None,
+        stderr_tail: str = "",
+        survivors: Sequence[int] = (),
+    ) -> None:
+        super().__init__(message)
+        self.pid = pid
+        self.elapsed_seconds = elapsed_seconds
+        self.stderr_tail = stderr_tail
+        self.survivors = tuple(survivors)
+
+
+class ProcessTimeout(ProcessFailure, TimeoutError):
+    """The absolute deadline expired. Also a :class:`TimeoutError` so existing
+    ``except TimeoutError`` callers keep their classification unchanged."""
+
+
+class ProcessCancelled(ProcessFailure):
     """Raised when a blocking child operation was interrupted by cancellation.
 
-    Distinct from :class:`TimeoutError`: the deadline had not expired, an
+    Distinct from :class:`ProcessTimeout`: the deadline had not expired, an
     external cancel request arrived. The caller maps it to a ``cancelled``
     attempt, never to a timeout or an encoder fault.
     """
@@ -113,10 +148,11 @@ class ManagedProcess:
         stdin: int | None = subprocess.PIPE,
         stdout: int = subprocess.DEVNULL,
         stderr_path: Path | None = None,
-        grace_seconds: float = 5.0,
+        grace_seconds: float = TEARDOWN_BUDGET_SECONDS,
         cancel: Callable[[], bool] | None = None,
     ) -> None:
         self.argv = list(argv)
+        #: Total teardown budget, spent once across TERM, KILL, reap and sweep.
         self.grace_seconds = grace_seconds
         #: Checked inside every blocking operation. Without it a cancel request
         #: cannot reach a write parked in the kernel or a wait on a stalled
@@ -164,7 +200,10 @@ class ManagedProcess:
         self.terminate_tree()
         raise ProcessCancelled(
             f"cancellation requested while {during} {self.argv[0]!r} (pid {self.pid}); "
-            f"the owned process group was torn down and nothing was published"
+            f"the owned process group was torn down and nothing was published",
+            pid=self.pid,
+            stderr_tail=self.stderr_text(limit=2000),
+            survivors=tuple(self.survivors),
         )
 
     def write(self, data: bytes, deadline: float | None = None) -> None:
@@ -202,9 +241,13 @@ class ManagedProcess:
             self.raise_if_cancelled(f"writing {len(view)} of {len(data)} bytes to")
             remaining = _POLL_SECONDS if deadline is None else deadline - time.monotonic()
             if deadline is not None and remaining <= 0:
-                raise TimeoutError(
+                self.terminate_tree()
+                raise ProcessTimeout(
                     f"deadline elapsed while writing to {self.argv[0]!r} "
-                    f"(pid {self.pid}); {len(view)} of {len(data)} bytes unwritten"
+                    f"(pid {self.pid}); {len(view)} of {len(data)} bytes unwritten",
+                    pid=self.pid,
+                    stderr_tail=self.stderr_text(limit=2000),
+                    survivors=tuple(self.survivors),
                 )
             _, writable, _ = select.select([], [fd], [], min(remaining, _POLL_SECONDS))
             if not writable:
@@ -262,28 +305,37 @@ class ManagedProcess:
         holding pipes or CPU. So after the leader is reaped the group is
         SIGKILLed unconditionally and probed, and any survivor is reported in
         :attr:`survivors` rather than silently ignored.
+
+        ``grace_seconds`` is the **total** teardown budget, spent once across
+        every phase below. It used to start a fresh window per phase, so a
+        stubborn child could consume it several times over: measured,
+        ``timeout=0.3, grace=1.0`` returned at 1.310 s.
         """
-        leader_running = self.process.poll() is None
-        if leader_running:
+        budget = time.monotonic() + self.grace_seconds
+
+        def left() -> float:
+            return max(0.0, budget - time.monotonic())
+
+        if self.process.poll() is None:
             self._signal_group(signal.SIGTERM)
-            deadline = time.monotonic() + self.grace_seconds
-            while time.monotonic() < deadline and self.process.poll() is None:
-                time.sleep(0.02)
+            while left() > 0 and self.process.poll() is None:
+                time.sleep(min(0.02, left()))
             if self.process.poll() is None:
                 self._signal_group(signal.SIGKILL)
                 with contextlib.suppress(subprocess.TimeoutExpired):
-                    self.process.wait(timeout=self.grace_seconds)
+                    self.process.wait(timeout=left())
 
         if self._group_id is None:
             return
         # The leader is gone; sweep the group for descendants that outlived it.
         self._signal_group(signal.SIGKILL)
-        deadline = time.monotonic() + self.grace_seconds
-        while time.monotonic() < deadline:
+        while True:
             if not self._group_alive():
                 self.survivors = []
                 return
-            time.sleep(0.05)
+            if left() <= 0:
+                break
+            time.sleep(min(0.05, left()))
         self.survivors = [self._group_id]
 
     def _group_alive(self) -> bool:
@@ -357,7 +409,7 @@ def run_capture(
     env: dict[str, str] | None = None,
     cwd: Path | None = None,
     stdin_path: Path | None = None,
-    grace_seconds: float = 5.0,
+    grace_seconds: float = TEARDOWN_BUDGET_SECONDS,
 ) -> CaptureResult:
     """Run ``argv`` to completion with stdout/stderr captured, under supervision.
 
@@ -368,10 +420,15 @@ def run_capture(
     (an FFmpeg filter helper, a future native worker's child) to outlive the
     timeout as an orphan.
 
-    Raises :class:`TimeoutError` when ``timeout`` expires and
+    ``timeout`` is one **absolute** launch-to-completion deadline; the separate
+    ``grace_seconds`` teardown budget is spent only after it expires, and is
+    never added to it.
+
+    Raises :class:`ProcessTimeout` when the deadline expires and
     :class:`ProcessCancelled` when ``cancel`` fires. Both tear the whole group
-    down first, and any survivor is reported in
-    :attr:`CaptureResult.survivors` rather than assumed away.
+    down first and carry the survivor groups on the exception, because a raised
+    exception cannot return a :class:`CaptureResult` -- and those are exactly
+    the paths where a leaked process is most likely.
     """
     started = time.monotonic()
     deadline = started + timeout
@@ -407,9 +464,13 @@ def run_capture(
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 proc.terminate_tree()
-                raise TimeoutError(
+                raise ProcessTimeout(
                     f"{argv[0]!r} (pid {proc.pid}) did not finish within "
-                    f"{timeout:.3f}s; its process group was torn down"
+                    f"{timeout:.3f}s; its process group was torn down",
+                    pid=proc.pid,
+                    elapsed_seconds=time.monotonic() - started,
+                    stderr_tail=b"".join(chunks[2]).decode("utf-8", "replace")[-2000:],
+                    survivors=tuple(proc.survivors),
                 )
             readable, _, _ = select.select(list(open_fds), [], [], min(remaining, _POLL_SECONDS))
             for fd in readable:
@@ -425,15 +486,35 @@ def run_capture(
                     chunks[index].append(data)
                 else:
                     open_fds.discard(fd)
-        # Both pipes are at EOF, so the child has closed them; the remaining
-        # wait is only to collect the exit status. A small floor keeps a child
-        # that finished exactly as the deadline expired from being reported as a
-        # timeout -- it is reaping an already-finished process, not more work.
-        code = proc.wait(timeout=max(_REAP_SECONDS, deadline - time.monotonic()))
+        # EOF on both pipes is NOT proof that the child exited: a process can
+        # close fd 1 and 2 and keep running. Measured with the previous 250 ms
+        # reap floor: `timeout=0.15` against a child that closed both pipes and
+        # slept 0.20 s returned SUCCESS after 0.225 s, so the declared deadline
+        # was not authoritative. Poll first -- an already-exited child is reaped
+        # immediately -- and otherwise wait only what is left of the absolute
+        # deadline, never a moment more.
+        code = proc.process.poll()
+        if code is None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                proc.terminate_tree()
+                raise ProcessTimeout(
+                    f"{argv[0]!r} (pid {proc.pid}) closed its output but had not "
+                    f"exited within {timeout:.3f}s; its process group was torn down",
+                    pid=proc.pid,
+                    elapsed_seconds=time.monotonic() - started,
+                    stderr_tail=b"".join(chunks[2]).decode("utf-8", "replace")[-2000:],
+                    survivors=tuple(proc.survivors),
+                )
+            code = proc.wait(timeout=left)
     except subprocess.TimeoutExpired as exc:
-        raise TimeoutError(
+        raise ProcessTimeout(
             f"{argv[0]!r} (pid {proc.pid}) did not exit within {timeout:.3f}s; "
-            f"its process group was torn down"
+            f"its process group was torn down",
+            pid=proc.pid,
+            elapsed_seconds=time.monotonic() - started,
+            stderr_tail=b"".join(chunks[2]).decode("utf-8", "replace")[-2000:],
+            survivors=tuple(proc.survivors),
         ) from exc
     finally:
         proc.close()

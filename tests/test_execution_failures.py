@@ -501,3 +501,129 @@ def test_a_probe_deadline_is_classified_as_a_timeout_not_invalid_output(tmp_path
         capture.side_effect = TimeoutError("probe exceeded its deadline")
         with pytest.raises(JobTimeoutError, match="deadline elapsed"):
             probe_module.probe_output(FFmpegTools.discover(), target, timeout=0.2)
+
+
+# --- R4 round 3: one absolute deadline, one total teardown budget ------------
+
+
+def test_closing_both_pipes_does_not_buy_a_process_extra_time(tmp_path):
+    """R4.1: EOF is not proof of exit, and must not extend the deadline.
+
+    A 250 ms reap floor was added so a child finishing exactly on the deadline
+    would not be called a timeout. But a process can close fd 1 and 2 and keep
+    running: measured, `timeout=0.15` against a child that closed both pipes and
+    slept 0.20 s returned SUCCESS after 0.225 s. The declared deadline has to be
+    authoritative.
+    """
+    from animalite.proc import ProcessTimeout, run_capture
+
+    script = tmp_path / "close_and_live.py"
+    script.write_text("import os, time\nos.close(1)\nos.close(2)\ntime.sleep(2.0)\n")
+    started = time.monotonic()
+    # Either timeout branch is correct -- whether the absolute deadline is
+    # already spent at EOF, or expires during the bounded wait that follows.
+    with pytest.raises(ProcessTimeout, match="torn down"):
+        run_capture([sys.executable, str(script)], timeout=0.15, grace_seconds=1.0)
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.15 + 1.0 + 0.5, (
+        f"took {elapsed:.3f}s; the bound is the deadline plus one teardown budget"
+    )
+
+
+def test_the_teardown_budget_is_spent_once_not_once_per_phase(tmp_path, monkeypatch):
+    """R4.2: TERM, KILL, reap and the group sweep share one total budget.
+
+    Each phase used to start its own window, so a stubborn child could consume
+    the grace several times over.
+    """
+    from animalite.proc import ManagedProcess
+
+    script = tmp_path / "ignores_term.py"
+    script.write_text(
+        "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(30)\n"
+    )
+    budget = 0.5
+    proc = ManagedProcess([sys.executable, str(script)], grace_seconds=budget)
+    try:
+        time.sleep(0.15)
+        # Force every phase to be exercised: the group never reports clear.
+        monkeypatch.setattr(proc, "_group_alive", lambda: True)
+        started = time.monotonic()
+        proc.terminate_tree()
+        elapsed = time.monotonic() - started
+    finally:
+        proc.process.kill()
+    assert elapsed < budget * 1.6, (
+        f"teardown took {elapsed:.3f}s against a {budget:.2f}s total budget; "
+        "the budget is being spent per phase"
+    )
+    assert proc.survivors, "a group that never clears must be reported as a survivor"
+
+
+def test_an_expired_deadline_stops_the_pipeline_instead_of_renewing_it(tmp_path, fixture_anchors):
+    """R4.2: `max(0.1, ...)` handed every later stage a fresh 100 ms.
+
+    An expired job deadline must prevent the next native child from launching,
+    not grant it another allowance.
+    """
+    service = _service_with(SlowAdapter(), tmp_path, "expiring-profile")
+    record = service.render_blocking(
+        make_request(fixture_anchors, profile_id="expiring-profile", timeout_seconds=0.3)
+    )
+    assert record.state is JobState.FAILED
+    assert record.failure is not None
+    assert record.failure.category is FailureCategory.TIMEOUT
+    _assert_no_published_output(record)
+
+
+# --- R4.3 round 3: a leaked process is a failed attempt ----------------------
+
+
+def test_a_surviving_encoder_group_fails_the_attempt_and_publishes_nothing(
+    tmp_path, fixture_anchors
+):
+    """R4.3: survivors were merely noted, then the run went on to publish.
+
+    A leaked encoder still holds CPU, memory and descriptors; reporting a clean
+    run that was not clean is exactly what the cleanup guarantee forbids.
+    """
+    from unittest.mock import patch
+
+    from animalite.media import encode as encode_module
+
+    real_encode = encode_module.encode_delivery_stream
+
+    def leaky(*args, **kwargs):
+        outcome = real_encode(*args, **kwargs)
+        return encode_module.EncodeOutcome(
+            frames_written=outcome.frames_written, survivors=(987654,)
+        )
+
+    import animalite.core.service as service_module
+
+    service = LocalExecutionService(tmp_path / "ws", tools=FFmpegTools.discover())
+    # The service imported the function by name, so both bindings are patched.
+    with (
+        patch.object(encode_module, "encode_delivery_stream", leaky),
+        patch.object(service_module, "encode_delivery_stream", leaky),
+    ):
+        record = service.render_blocking(make_request(fixture_anchors))
+
+    assert record.state is JobState.FAILED, "a leaked process group must fail the attempt"
+    assert record.failure is not None
+    assert record.failure.category is FailureCategory.CLEANUP_FAILED
+    assert 987654 in record.cleanup_survivor_groups
+    _assert_no_published_output(record)
+
+
+def test_survivor_evidence_survives_an_exception(tmp_path):
+    """R4.3: an exception cannot return a CaptureResult, so it carries the evidence."""
+    from animalite.errors import JobTimeoutError
+    from animalite.proc import ProcessTimeout
+
+    exc = ProcessTimeout("boom", pid=42, elapsed_seconds=1.5, stderr_tail="tail", survivors=(7, 8))
+    assert exc.survivors == (7, 8)
+    assert isinstance(exc, TimeoutError), "existing `except TimeoutError` callers must still match"
+    # And a wrapper must forward it rather than replace the evidence with nothing.
+    wrapped = JobTimeoutError("wrapped", survivors=exc.survivors)
+    assert wrapped.survivors == (7, 8)

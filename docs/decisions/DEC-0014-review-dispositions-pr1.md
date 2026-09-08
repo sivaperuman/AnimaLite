@@ -7,6 +7,8 @@
   the earlier implementation investigation it responded to, not the decision.)
 * **Follow-up review:** https://github.com/sivaperuman/AnimaLite/pull/1#issuecomment-5585335911
   — accepted R1/R2/R6 for the gated foundation and returned R3/R4/R5 as partial.
+* **Third review:** https://github.com/sivaperuman/AnimaLite/pull/1#issuecomment-5586094716
+  — held R1/R2/R6 resolved and returned R3/R4/R5 as partial a second time.
 * **Reviewed head:** `0e2c1a98dc4c190bc70b8ce9c281f34abd929375`; follow-up
   reviewed `8ba39f5d0a9e1666f6a4f7c7b7f8e002f57b7c50`.
 
@@ -60,6 +62,32 @@ match. This is recorded as a limitation, not described as complete binding.
 
 Package B's checks are **not** reviewed or implemented in this PR; its review
 remains separate.
+
+## Third round: R3, R4 and R5 closed
+
+The third review held R1/R2/R6 and returned R3/R4/R5 partial again. Two of the
+findings were **regressions introduced by the second round's own fixes**, which
+is recorded here rather than glossed: a fix that satisfies a reproduction is not
+the same as a fix that establishes the property.
+
+| ID | Reproduced as | Disposition |
+| --- | --- | --- |
+| R3(d) | The cold child discarded the parent's resolved tools. With injected identities in the parent, warm recorded `parent-only-ffmpeg / PARENT-INJECTED` while cold silently ran host-discovered `ffmpeg 6.1.1-3ubuntu5`; both `succeeded` under one plan | Fixed: `ExecutionEnvelope.expected_tools` carries a `MediaToolSelection` with canonical paths and executable content hashes; the child is pointed at them via `ANIMALITE_FFMPEG`/`ANIMALITE_FFPROBE`, verifies path/version/build-configuration/content-hash before rendering, and records the executed pair in `EnvironmentRecord.media_tools`; the parent re-compares before accepting |
+| R3(e) | A cold run could succeed on incomplete process evidence | Fixed: fail closed on a missing or unidentified marker, a pid disagreeing with the launched pid, a child not provably distinct from the parent, or any survivor group |
+| R4.1 | **Regression from round two.** The 250 ms reap floor made the deadline non-authoritative: `timeout=0.15` against a child that closed both pipes and slept 0.20 s returned **SUCCESS after 0.225 s** | Fixed: EOF is not proof of exit. Poll first, reap an exited child immediately, otherwise wait only the remaining absolute deadline. `_REAP_SECONDS` deleted |
+| R4.2 | **Regression from round two.** The 30 s allowance was added to the execution timeout *and* passed as `grace_seconds`, and `terminate_tree()` started a fresh window per phase; `timeout=0.3, grace=1.0` returned at **1.310 s**, and forced through every phase the teardown alone cost ~2x its budget | Fixed: `TEARDOWN_BUDGET_SECONDS = 5.0` is one **total** budget shared across TERM, KILL, reap and sweep; the execution deadline is the job deadline plus a separately named `COLD_STARTUP_ALLOWANCE_SECONDS`, never the teardown budget |
+| R4.2b | `remaining()` returned `max(0.1, ...)`, renewing a 100 ms allowance to every later stage after the deadline expired | Fixed: an expired job deadline raises before another native child is launched |
+| R4.3 | Survivors were discarded when an exception propagated, never copied into `RunRecord`, and on the success path were merely *noted* before the run went on to publish | Fixed: `ProcessFailure`/`ProcessTimeout`/`ProcessCancelled` carry pid, elapsed, stderr tail and survivor groups; wrappers forward them; a non-empty survivor set raises `CleanupFailed` so nothing is published; `RunRecord` carries the groups and refuses to be `succeeded` while holding any |
+| R5(c) | `drift_pixels=10**1000` is contract-valid but raised `OverflowError: int too large to convert to float` instead of returning a validation issue | Fixed: magnitude is compared on the value as given; `math.isfinite` is applied only to actual floats. Validation is now total over every contract-valid control value |
+
+### Why two rounds of R3/R4/R5 were needed
+
+Each second-round fix addressed the *reproduction* it was given rather than the
+*property* behind it. Binding the profile did not bind the tools; making a
+deadline observable in one operation is not the same as making it authoritative;
+recording survivors is not the same as acting on them. The regressions in R4.1
+and R4.2 came from allowances added to make a fix comfortable — a reap floor and
+a teardown grace — each of which quietly re-opened the guarantee it sat next to.
 
 ## The qualification implementation gate (R1)
 

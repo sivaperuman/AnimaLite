@@ -41,8 +41,8 @@ Resolved exactly the pinned set: `animalite 0.1.0`, `pydantic 2.13.5`,
 | `ruff check --no-cache .` | `All checks passed!` — exit 0 |
 | `ruff format --no-cache --check .` | `85 files already formatted` — exit 0 |
 | `mypy` (with `.mypy_cache` removed) | `Success: no issues found in 57 source files` — exit 0 (strict mode for `src/`) |
-| `python -m pytest -m "not slow" -q -p no:cacheprovider` | `172 passed, 31 deselected in 51.09s` — exit 0 |
-| `python -m pytest -q -p no:cacheprovider` | `203 passed in 125.84s` — exit 0 |
+| `python -m pytest -m "not slow" -q -p no:cacheprovider` | `183 passed, 37 deselected in 58.32s` — exit 0 |
+| `python -m pytest -q -p no:cacheprovider` | `220 passed in 140.11s` — exit 0 |
 
 > **Why the caches are disabled here.** The first CI run failed on `ruff check`
 > with four `I001` import-order findings that a local `ruff check .` had just
@@ -212,6 +212,27 @@ The replaced timing test is worth naming: `min(cold) > min(warm)` was asserted a
 a correctness invariant. It is not one on a shared runner, and it can fail from
 noise alone. Timer placement is now proved by injecting a known delay at the
 launch boundary and requiring the recorded cold wall time to have absorbed it.
+
+## 8c. Third-round repairs (R3, R4, R5) — before and after
+
+Reproduced on `94cfc5a` before fixing, then re-measured. **Two of these were
+regressions introduced by the second round's own fixes**, and are marked as such.
+
+| Behaviour | Before | After |
+| --- | --- | --- |
+| Cold run with the parent holding injected tool identities | warm recorded `parent-only-ffmpeg / PARENT-INJECTED`; cold silently ran host-discovered `ffmpeg 6.1.1-3ubuntu5`; **both `succeeded`** under one plan | cold is `failed`: *"the media tools resolved here are not the ones this job was built for"* |
+| Cold run on incomplete process evidence | accepted as `succeeded` | rejected: missing/unidentified marker, pid disagreement, non-distinct instance, or any survivor group |
+| **Regression from round 2** — `timeout=0.15`, child closes fd 1/2 then sleeps 0.20 s | **SUCCESS after 0.225 s** — the 250 ms reap floor made the deadline non-authoritative | `ProcessTimeout` after **0.171 s** |
+| Same child sleeping 0.60 s | `TimeoutError` after 0.280 s | `ProcessTimeout` after **0.171 s** |
+| **Regression from round 2** — teardown forced through every phase, budget 0.5 s | ~1.0 s+: TERM wait, KILL wait and group sweep each started a fresh window | **0.500 s** total, survivors reported |
+| An expired job deadline | `max(0.1, …)` renewed a 100 ms allowance, so the next decode/encode/probe still launched | raises before another native child is started |
+| A leaked encoder group | noted, then the run went on to probe and **publish** | `CleanupFailed`, nothing published, groups recorded on the attempt and in the ledger |
+| `drift_pixels = 10**1000` (contract-valid) | `OverflowError: int too large to convert to float` escaped `validate_request` | `VAL-CONTROL-VALUE-INVALID` |
+
+The two regressions share a shape worth naming: each was an *allowance* added to
+make a fix comfortable — a reap floor so a just-finished child would not be
+called a timeout, a teardown grace so cleanup had room — and each quietly
+re-opened the guarantee it sat beside.
 
 ## 9. Benchmark harness against the fixtures
 

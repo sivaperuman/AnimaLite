@@ -511,3 +511,151 @@ def test_a_supervisor_timeout_is_recorded_and_the_next_run_still_executes(
     assert timed_out[0].failure.category is FailureCategory.TIMEOUT
     assert timed_out[0].wall_seconds is None
     assert succeeded, "the plan did not continue after the supervisor timeout"
+
+
+# --- R3 round 3: the media tools must be bound across the boundary too -------
+
+
+def test_an_explicitly_selected_tool_pair_round_trips_to_the_cold_child(
+    tmp_path, fixture_dataset, tools
+):
+    """The child must execute the parent's selection, not rediscover its own.
+
+    With the parent holding injected identities, warm ran under those and cold
+    silently ran under the host-discovered FFmpeg, both reporting success under
+    one plan. Equal output was incidental: the paths happened to be the same
+    binaries.
+    """
+    _, ledger, _ = _run(tmp_path, fixture_dataset, warm=1, cold=1, preview=0)
+    cold = [r for r in ledger.records() if r.kind is RunKind.COLD_FINAL]
+    warm = [r for r in ledger.records() if r.kind is RunKind.WARM_FINAL]
+    assert cold and warm
+
+    for record in cold + warm:
+        assert record.outcome is RunOutcome.SUCCEEDED, record.failure
+        assert record.environment is not None
+        executed = record.environment.media_tools
+        assert executed is not None, "every run must record the tools it executed with"
+        assert not tools.selection().mismatches(
+            executed.model_copy(
+                update={
+                    "ffmpeg": executed.ffmpeg.model_copy(update={"content_hash": None}),
+                    "ffprobe": executed.ffprobe.model_copy(update={"content_hash": None}),
+                }
+            )
+        ), f"{record.run_id} ran different tools than were selected"
+
+
+def test_a_cold_child_running_different_tools_is_not_a_successful_run(
+    tmp_path, fixture_dataset, tools
+):
+    """R3: a tool substitution must fail closed, not pass with equal output."""
+    from animalite.media.ffmpeg import FFmpegTools
+
+    injected = FFmpegTools(
+        ffmpeg=tools.ffmpeg.model_copy(update={"version": "PARENT-ONLY-NOT-ON-THIS-HOST"}),
+        ffprobe=tools.ffprobe.model_copy(update={"version": "PARENT-ONLY-NOT-ON-THIS-HOST"}),
+    )
+    registry = default_registry()
+    profile = registry.profile("fixture-synthetic")
+    host = HostRecord(host_id="development-unapproved")
+    plan = build_plan(
+        dataset=fixture_dataset,
+        host=host,
+        profile_id=profile.profile_id,
+        profile_digest=content_digest(profile),
+        target_revision="v0.12-proposed",
+        order_seed=42,
+        warm_repetitions=0,
+        cold_repetitions=1,
+        preview_repetitions=0,
+    )
+    ledger = RunLedger(tmp_path / "ledger")
+    ledger.write_plan(plan)
+    runner = BenchmarkRunner(
+        dataset=fixture_dataset,
+        host=host,
+        profile_id=profile.profile_id,
+        workspace=tmp_path / "bench",
+        ledger=ledger,
+        registry=registry,
+        tools=injected,
+    )
+    planned = sorted(plan.planned_runs, key=lambda r: r.order_index)[0]
+    record = runner.run_one(plan, planned)
+
+    assert record.outcome is not RunOutcome.SUCCEEDED
+    assert record.wall_seconds is None, "a substituted-tool run must contribute no observation"
+
+
+@pytest.mark.parametrize(
+    ("corruption", "expected"),
+    [
+        ("delete", "no start marker"),
+        ("wrong_pid", "does not describe the process"),
+        ("unidentified", "pid alone"),
+    ],
+)
+def test_incomplete_cold_process_evidence_is_not_a_successful_run(
+    tmp_path, fixture_dataset, monkeypatch, corruption, expected
+):
+    """R3: fail closed. An unverifiable cold sample is not weaker evidence, it is none."""
+    import animalite.bench.runner as runner_module
+    from animalite.contracts.job import ProcessInstance
+
+    plan, _ledger, runner = _cold_only(tmp_path, fixture_dataset)
+    planned = sorted(plan.planned_runs, key=lambda r: r.order_index)[0]
+    real_capture = runner_module.run_capture
+
+    def tamper(*args, **kwargs):
+        result = real_capture(*args, **kwargs)
+        marker = tmp_path / "bench" / "cold" / planned.run_id / "process.json"
+        if corruption == "delete":
+            marker.unlink(missing_ok=True)
+        else:
+            instance = ProcessInstance.model_validate_json(marker.read_text(encoding="utf-8"))
+            if corruption == "wrong_pid":
+                instance = instance.model_copy(update={"pid": instance.pid + 100000})
+            else:
+                instance = instance.model_copy(update={"boot_id": None, "start_ticks": None})
+            marker.write_text(instance.model_dump_json(indent=2), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(runner_module, "run_capture", tamper)
+    record = runner.run_one(plan, planned)
+
+    assert record.outcome is not RunOutcome.SUCCEEDED
+    assert record.wall_seconds is None
+    assert record.failure is not None and expected in record.failure.message
+
+
+def test_a_cold_run_that_leaks_a_process_group_is_not_successful(
+    tmp_path, fixture_dataset, monkeypatch
+):
+    """R4.3: a leaked process is a cleanup failure, and it reaches the ledger."""
+    import animalite.bench.runner as runner_module
+    from animalite.proc import CaptureResult
+
+    plan, ledger, runner = _cold_only(tmp_path, fixture_dataset)
+    planned = sorted(plan.planned_runs, key=lambda r: r.order_index)[0]
+    real_capture = runner_module.run_capture
+
+    def leaky(*args, **kwargs):
+        result = real_capture(*args, **kwargs)
+        return CaptureResult(
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            pid=result.pid,
+            elapsed_seconds=result.elapsed_seconds,
+            survivors=(555001,),
+        )
+
+    monkeypatch.setattr(runner_module, "run_capture", leaky)
+    record = runner.run_one(plan, planned)
+    ledger.append(record)
+
+    assert record.outcome is not RunOutcome.SUCCEEDED
+    assert record.wall_seconds is None
+    assert 555001 in record.cleanup_survivor_groups, "survivors must reach the ledger"
+    assert [r for r in ledger.records() if 555001 in r.cleanup_survivor_groups]

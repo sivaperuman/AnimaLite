@@ -54,6 +54,7 @@ class FailureCategory(StrEnum):
     TIMEOUT = "timeout"
     CANCELLED = "cancelled"
     RESOURCE_EXHAUSTED = "resource_exhausted"
+    CLEANUP_FAILED = "cleanup_failed"
     TOOL_UNAVAILABLE = "tool_unavailable"
     INTERNAL_ERROR = "internal_error"
 

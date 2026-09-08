@@ -128,6 +128,10 @@ def capture_environment(
         architecture=platform.machine(),
         thread_environment=thread_environment(thread_budget),
         tool_identities=resolved.identity_map(),
+        # Structured as well as compact: a launcher has to compare the tools the
+        # child actually ran against the ones it was told to run, and a
+        # human-readable summary string cannot carry that comparison.
+        media_tools=resolved.selection(),
         dependency_lock_digest=_lock_digest(),
         cpu_flags_recorded=_cpu_flags(),
     )

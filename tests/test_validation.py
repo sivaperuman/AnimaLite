@@ -281,3 +281,68 @@ def test_a_valid_override_replaces_an_invalid_unused_default(tmp_path):
         make_request(anchors, controls={"drift_pixels": 3.0}), registry, tools=TOOLS
     )
     assert report.valid, [i.message for i in report.errors]
+
+
+@pytest.mark.parametrize("value", [10**1000, -(10**1000)])
+def test_a_contract_valid_extreme_integer_returns_a_report_not_an_exception(tmp_path, value):
+    """R5: validation must be total over every value the contract accepts.
+
+    `drift_pixels=10**1000` is a valid request control, but the bound check
+    converted to float first, so `validate_request` raised
+    `OverflowError: int too large to convert to float` instead of returning
+    VAL-CONTROL-VALUE-INVALID. A Python int is unbounded; the comparison is now
+    made on the value as given.
+    """
+    anchors = AnchorSet(anchors=_endpoints(tmp_path))
+    report = _report(anchors, controls={"drift_pixels": value})
+    assert not report.valid
+    assert CodeVAL.CONTROL_VALUE_INVALID in report.error_codes
+
+
+@pytest.mark.parametrize("value", [10**1000, -(10**1000)])
+def test_an_extreme_integer_profile_default_also_returns_a_report(tmp_path, value):
+    """The same must hold when the value arrives as a profile default."""
+    registry = default_registry()
+    registry.register_profile(
+        registry.profile("fixture-synthetic").model_copy(
+            update={"parameters": {"ease": "smoothstep", "drift_pixels": value}}
+        )
+    )
+    anchors = AnchorSet(anchors=_endpoints(tmp_path))
+    report = validate_request(make_request(anchors), registry, tools=TOOLS)
+    assert not report.valid
+    issue = next(i for i in report.errors if i.code == CodeVAL.CONTROL_VALUE_INVALID)
+    assert issue.field_path == "engine_profile.parameters.drift_pixels"
+
+
+def test_an_extreme_integer_reaching_the_adapter_directly_is_an_adapter_error(tmp_path):
+    """Driven without the service, synthesis must still not raise OverflowError."""
+    from animalite.adapters.base import AdapterContext
+    from animalite.adapters.fixture import FixtureAdapter
+    from animalite.errors import AdapterError
+
+    anchors = AnchorSet(anchors=_endpoints(tmp_path))
+    context = AdapterContext(
+        anchor_frames={},
+        output=P_L_FINAL_OUTPUT,
+        anchors=anchors,
+        profile=default_registry().profile("fixture-synthetic"),
+        controls={"ease": "linear", "drift_pixels": 10**1000},
+    )
+    with pytest.raises(AdapterError, match="drift_pixels"):
+        next(iter(FixtureAdapter().synthesize(context)))
+
+
+def test_a_valid_override_still_replaces_an_extreme_integer_default(tmp_path):
+    """The accepted override-of-invalid-default behaviour is preserved."""
+    registry = default_registry()
+    registry.register_profile(
+        registry.profile("fixture-synthetic").model_copy(
+            update={"parameters": {"ease": "smoothstep", "drift_pixels": 10**1000}}
+        )
+    )
+    anchors = AnchorSet(anchors=_endpoints(tmp_path))
+    report = validate_request(
+        make_request(anchors, controls={"drift_pixels": 5.0}), registry, tools=TOOLS
+    )
+    assert report.valid, [i.message for i in report.errors]

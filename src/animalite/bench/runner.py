@@ -50,6 +50,7 @@ from animalite.contracts.job import (
     EnvironmentRecord,
     ExecutionEnvelope,
     FailureRecord,
+    MediaToolSelection,
     ProcessInstance,
     RenderRequest,
 )
@@ -60,15 +61,17 @@ from animalite.core.environment import capture_environment, current_process_inst
 from animalite.core.logging import StructuredLogger, utc_now
 from animalite.core.service import LocalExecutionService
 from animalite.media.ffmpeg import FFmpegTools
-from animalite.proc import CaptureResult, run_capture
+from animalite.proc import TEARDOWN_BUDGET_SECONDS, CaptureResult, run_capture
 
-#: Bounded teardown grace added on top of the job deadline for the cold child.
-#: The child enforces its own job deadline; this covers only interpreter
-#: shutdown and process-group teardown, so a hung child cannot outlive the plan.
-COLD_TEARDOWN_GRACE_SECONDS = 30.0
+#: Named allowance added to the child's own job deadline to form the single
+#: absolute launch-to-completion deadline: interpreter startup, imports, tool
+#: discovery, and the child's orderly failure reporting after its job deadline
+#: fires. The separate teardown budget (:data:`TEARDOWN_BUDGET_SECONDS`) is NOT
+#: added here -- counting one allowance in both places let it be spent twice.
+COLD_STARTUP_ALLOWANCE_SECONDS = 30.0
 
 __all__ = [
-    "COLD_TEARDOWN_GRACE_SECONDS",
+    "COLD_STARTUP_ALLOWANCE_SECONDS",
     "BenchmarkRunner",
     "build_plan",
     "load_dataset",
@@ -186,6 +189,7 @@ class BenchmarkRunner:
         self.timeout_seconds = timeout_seconds
         self._clips = {clip.clip_id: clip for clip in dataset.clips}
         self._anchor_cache: dict[str, AnchorSet] = {}
+        self._tool_selection: MediaToolSelection | None = None
         self._warm_service: LocalExecutionService | None = None
 
     # ------------------------------------------------------------------ execution
@@ -282,12 +286,14 @@ class BenchmarkRunner:
         run_dir.mkdir(parents=True, exist_ok=True)
         marker_path = run_dir / "process.json"
         marker_path.unlink(missing_ok=True)
+        expected_tools = self._expected_tools()
         envelope = ExecutionEnvelope(
             envelope_id=f"{plan.plan_id}:{planned.run_id}",
             request=request,
             profile=profile,
             profile_digest=content_digest(profile),
             process_marker_path=str(marker_path),
+            expected_tools=expected_tools,
         )
         envelope_path = run_dir / "envelope.json"
         envelope_path.write_text(
@@ -305,17 +311,30 @@ class BenchmarkRunner:
             str(run_dir / "ws"),
             "--json",
         ]
-        # One launch-to-completion deadline. The child enforces the job deadline
-        # itself; the parent's allowance adds only the bounded teardown grace,
-        # so a hung child cannot outlive the plan.
-        supervision_seconds = self.timeout_seconds + COLD_TEARDOWN_GRACE_SECONDS
+        # ONE absolute launch-to-completion deadline: the child's own job
+        # deadline plus a named allowance for interpreter startup, imports, tool
+        # discovery and the child's orderly failure reporting. The teardown
+        # budget is passed separately and is never added here -- adding it to
+        # both let the same allowance be spent twice.
+        supervision_seconds = self.timeout_seconds + COLD_STARTUP_ALLOWANCE_SECONDS
+        child_env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+        if expected_tools is not None:
+            # The envelope *declares* the expected tools; the environment is how
+            # the child is pointed at them. The envelope never names an
+            # executable to import or run on its own authority.
+            for var, tool in (
+                ("ANIMALITE_FFMPEG", expected_tools.ffmpeg),
+                ("ANIMALITE_FFPROBE", expected_tools.ffprobe),
+            ):
+                if tool.path:
+                    child_env[var] = tool.path
         clock_start = time.perf_counter()
         try:
             completed = run_capture(
                 argv,
                 timeout=supervision_seconds,
-                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-                grace_seconds=COLD_TEARDOWN_GRACE_SECONDS,
+                env=child_env,
+                grace_seconds=TEARDOWN_BUDGET_SECONDS,
             )
         except TimeoutError as exc:
             wall_seconds = time.perf_counter() - clock_start
@@ -391,10 +410,86 @@ class BenchmarkRunner:
                 failure_seconds=wall_seconds,
             )
 
+        rejection = self._reject_cold_evidence(envelope, attempt, evidence, completed)
+        if rejection is not None:
+            return self._not_run(
+                plan,
+                planned,
+                rejection,
+                outcome=RunOutcome.FAILED,
+                cold_process_evidence=evidence,
+                failure_seconds=wall_seconds,
+                cleanup_survivor_groups=completed.survivors,
+            )
+
         record = self._record_from_attempt(
             plan, planned, attempt, wall_seconds, started_at, profile
         )
         return record.model_copy(update={"cold_process_evidence": evidence})
+
+    @staticmethod
+    def _reject_cold_evidence(
+        envelope: ExecutionEnvelope,
+        attempt: AttemptRecord,
+        evidence: ColdProcessEvidence,
+        completed: CaptureResult,
+    ) -> str | None:
+        """Why this cold run must not be kept as a successful sample, or ``None``.
+
+        Fail closed. A cold observation is only worth its place in the sample if
+        we can show *which* process produced it and *what tools* it ran; an
+        unverifiable one is not a smaller kind of evidence, it is none.
+        """
+        instance = evidence.child_instance
+        if instance is None:
+            return (
+                "process-cold child wrote no start marker, so the process that "
+                "produced this timing cannot be identified"
+            )
+        if not instance.is_identified:
+            return (
+                f"process-cold child instance {instance.instance_key} rests on a pid "
+                "alone; without a boot id and start time a reused pid is "
+                "indistinguishable from a fresh process"
+            )
+        if instance.pid != completed.pid:
+            return (
+                f"process-cold child reported pid {instance.pid} but the launched "
+                f"process was pid {completed.pid}; the marker does not describe the "
+                "process that ran"
+            )
+        if not evidence.is_distinct_process:
+            return (
+                "process-cold child is not provably a different process instance "
+                "from the parent, so this is not a process-cold measurement"
+            )
+        if completed.survivors:
+            return (
+                f"process-cold child left process group(s) {list(completed.survivors)} "
+                "alive after teardown; a leaked process is a cleanup failure, not a "
+                "clean run"
+            )
+        expected = envelope.expected_tools
+        executed = attempt.environment.media_tools if attempt.environment else None
+        if expected is not None:
+            if executed is None:
+                return (
+                    "process-cold child recorded no media tool identities, so the "
+                    "tools it executed with cannot be compared with the plan"
+                )
+            problems = expected.mismatches(executed)
+            if problems:
+                return (
+                    "process-cold child executed different media tools than the plan "
+                    "selected: " + "; ".join(problems)
+                )
+        return None
+
+    def _expected_tools(self) -> MediaToolSelection | None:
+        """The tool pair the child must execute with, hashed once per runner."""
+        if self._tool_selection is None and self.tools.available:
+            self._tool_selection = self.tools.with_content_hashes().selection()
+        return self._tool_selection
 
     def _cold_evidence(
         self, completed: CaptureResult, argv: list[str], marker_path: Path
@@ -500,6 +595,8 @@ class BenchmarkRunner:
         category: FailureCategory = FailureCategory.INTERNAL_ERROR,
         cold_process_evidence: ColdProcessEvidence | None = None,
         failure_seconds: float | None = None,
+        cleanup_survivor_groups: Sequence[int] = (),
+        notes: Sequence[str] = (),
     ) -> RunRecord:
         """Record a run that never produced an acceptable service attempt.
 
@@ -525,6 +622,8 @@ class BenchmarkRunner:
             exploratory=True,
             cold_process_evidence=cold_process_evidence,
             failure_elapsed_seconds=failure_seconds,
+            cleanup_survivor_groups=list(cleanup_survivor_groups),
+            notes=list(notes),
         )
 
     def _record_from_attempt(
@@ -574,6 +673,8 @@ class BenchmarkRunner:
             qualification_eligible_profile=eligible,
             exploratory=exploratory,
             failure_elapsed_seconds=failure_elapsed,
+            cleanup_survivor_groups=list(attempt.cleanup_survivor_groups),
+            notes=list(attempt.notes),
         )
 
     def _fallback_environment(self) -> EnvironmentRecord:

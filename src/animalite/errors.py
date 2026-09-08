@@ -8,14 +8,18 @@ one-directional dependency core -> adapters (handoff rule 1).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from animalite.contracts.enums import FailureCategory
 
 __all__ = [
     "AdapterError",
     "AnimaLiteError",
     "AttemptConflictError",
+    "CleanupFailed",
     "CodeVAL",
     "EncoderError",
+    "JobCancelled",
     "JobTimeoutError",
     "LedgerIntegrityError",
     "OutputInvalidError",
@@ -57,9 +61,19 @@ class CodeVAL:
 
 
 class AnimaLiteError(Exception):
-    """Base class. Every subclass maps to exactly one failure category."""
+    """Base class. Every subclass maps to exactly one failure category.
+
+    Every error can carry ``survivors`` -- process groups still alive after
+    teardown. A raised exception cannot return a capture result, so without this
+    the cleanup evidence was discarded on exactly the paths (timeout,
+    cancellation) where a leaked process is most likely.
+    """
 
     category = FailureCategory.INTERNAL_ERROR
+
+    def __init__(self, *args: object, survivors: Sequence[int] = ()) -> None:
+        super().__init__(*args)
+        self.survivors: tuple[int, ...] = tuple(survivors)
 
 
 class ValidationRejected(AnimaLiteError):
@@ -78,6 +92,18 @@ class ProfileNotFoundError(AnimaLiteError):
 
 class AdapterError(AnimaLiteError):
     category = FailureCategory.ADAPTER_ERROR
+
+
+class CleanupFailed(AnimaLiteError):
+    """Owned processes outlived teardown.
+
+    A leaked encoder or worker is a failed attempt, not a footnote on a
+    successful one: it still holds CPU, memory and file descriptors, and the
+    section 12.0 cleanup guarantee did not hold. Publishing anyway would report
+    a clean run that was not clean.
+    """
+
+    category = FailureCategory.CLEANUP_FAILED
 
 
 class JobCancelled(AnimaLiteError):
