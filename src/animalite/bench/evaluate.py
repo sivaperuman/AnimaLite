@@ -15,10 +15,12 @@ from __future__ import annotations
 
 from animalite.bench.ledger import RunLedger
 from animalite.bench.stats import maximum, median, nearest_rank_percentile
+from animalite.contracts.base import content_digest
 from animalite.contracts.benchmark import (
     QUALIFICATION_CATEGORIES,
     BenchmarkPlan,
     BenchmarkReport,
+    ContinuousWorkloadRecord,
     DatasetManifest,
     DistributionSummary,
     EligibilityFinding,
@@ -41,6 +43,24 @@ from animalite.core.logging import utc_now
 __all__ = ["build_report", "distributions_for", "evaluate_eligibility"]
 
 _REQUIRED_KINDS = (RunKind.WARM_FINAL, RunKind.COLD_FINAL, RunKind.WARM_PREVIEW)
+
+#: Bindings that a formal qualification pass still requires but which are NOT
+#: implemented yet: linking each run's evidence to the exact executed settings,
+#: profile revision, artifact digests, source anchors and decoded output, and
+#: linking quality/offline/device/workload evidence to the runs and environment
+#: it came from. Until these exist, a formal pass cannot be earned here.
+#:
+#: This is a module constant on purpose. No argument, profile field or evidence
+#: bundle can lift it -- a caller must not be able to talk the evaluator into a
+#: pass the implementation cannot substantiate. Package B/C remove entries; the
+#: gate disappears when the list is empty.
+QUALIFICATION_IMPLEMENTATION_GAPS: tuple[str, ...] = (
+    "run evidence is not bound to the executed settings digest, profile revision "
+    "and verified artifact digests",
+    "output manifests are not bound to the source anchor hashes actually executed",
+    "quality, offline, device-trace and sustained-workload evidence carry no "
+    "references tying them to specific runs, outputs or environment",
+)
 
 _EXPLORATORY_LABEL = (
     "EXPLORATORY -- NOT QUALIFICATION EVIDENCE. This report does not establish any "
@@ -84,6 +104,158 @@ def distributions_for(plan: BenchmarkPlan, records: list[RunRecord]) -> list[Dis
             )
         )
     return summaries
+
+
+def _check_plan_integrity(
+    plan: BenchmarkPlan, dataset: DatasetManifest
+) -> list[EligibilityFinding]:
+    """Verify the plan's actual schedule, not just its header fields.
+
+    The repetition counts on the plan are a *declaration*. Before this check,
+    a plan could declare 3 warm repetitions per clip while scheduling one, and
+    every downstream count would agree with itself.
+    """
+    findings: list[EligibilityFinding] = []
+
+    clip_ids = [clip.clip_id for clip in dataset.clips]
+    duplicates = sorted({c for c in clip_ids if clip_ids.count(c) > 1})
+    if duplicates:
+        findings.append(
+            _finding(
+                "PLAN-DATASET-DUPLICATE-CLIPS",
+                f"dataset {dataset.dataset_id!r} repeats clip id(s) {duplicates}; "
+                "the locked sample is 12 distinct clips",
+                ["section 12.0"],
+            )
+        )
+
+    expected_counts = {
+        RunKind.WARM_FINAL: plan.warm_repetitions_per_clip,
+        RunKind.COLD_FINAL: plan.cold_repetitions_per_clip,
+        RunKind.WARM_PREVIEW: plan.preview_repetitions_per_clip,
+    }
+    scheduled: dict[tuple[str, RunKind], set[int]] = {}
+    for run in plan.planned_runs:
+        scheduled.setdefault((run.clip_id, run.kind), set()).add(run.repetition)
+
+    for clip_id in sorted(set(clip_ids)):
+        for kind, expected in expected_counts.items():
+            reps = scheduled.get((clip_id, kind), set())
+            if len(reps) != expected or reps != set(range(1, expected + 1)):
+                findings.append(
+                    _finding(
+                        "PLAN-SCHEDULE-MISMATCH",
+                        f"clip {clip_id!r} schedules {sorted(reps) or 'no'} "
+                        f"{kind.value} repetition(s); the plan declares {expected} "
+                        f"(expected exactly {sorted(range(1, expected + 1))})",
+                        ["section 12.0", "AT-055"],
+                    )
+                )
+
+    order = sorted(run.order_index for run in plan.planned_runs)
+    if order != list(range(len(plan.planned_runs))):
+        findings.append(
+            _finding(
+                "PLAN-ORDER-INVALID",
+                "planned run order_index values are not a permutation of "
+                f"0..{len(plan.planned_runs) - 1}; the fixed randomized order is "
+                "not reconstructible",
+                ["section 12.0"],
+            )
+        )
+    return findings
+
+
+def _check_record_identity(
+    *,
+    plan: BenchmarkPlan,
+    records: list[RunRecord],
+    host: HostRecord,
+    profile: EngineProfile,
+) -> list[EligibilityFinding]:
+    """Every record must be the run the plan asked for, from the right execution.
+
+    Matching on ``run_id`` alone let a record carrying a different profile, a
+    different host and an ``exploratory`` flag stand in for a qualifying run.
+    """
+    findings: list[EligibilityFinding] = []
+    planned_by_id = {run.run_id: run for run in plan.planned_runs}
+
+    mismatched: list[str] = []
+    wrong_plan: list[str] = []
+    wrong_host: list[str] = []
+    wrong_profile: list[str] = []
+    exploratory: list[str] = []
+    not_eligible: list[str] = []
+
+    for record in records:
+        planned = planned_by_id.get(record.run_id)
+        if planned is None:
+            continue  # reported separately as an unplanned record
+        if (record.clip_id, record.kind, record.repetition) != (
+            planned.clip_id,
+            planned.kind,
+            planned.repetition,
+        ):
+            mismatched.append(record.run_id)
+        if record.plan_id != plan.plan_id:
+            wrong_plan.append(record.run_id)
+        if record.host_id != host.host_id:
+            wrong_host.append(record.run_id)
+        if record.profile_id != profile.profile_id:
+            wrong_profile.append(record.run_id)
+        if record.exploratory:
+            exploratory.append(record.run_id)
+        if not record.qualification_eligible_profile:
+            not_eligible.append(record.run_id)
+
+    for code, offenders, message, refs in (
+        (
+            "REC-PLAN-MISMATCH",
+            mismatched,
+            "record contents do not match the planned (clip, kind, repetition)",
+            ["section 12.0", "AT-055"],
+        ),
+        (
+            "REC-WRONG-PLAN",
+            wrong_plan,
+            f"record plan_id differs from the evaluated plan {plan.plan_id!r}",
+            ["section 12.0"],
+        ),
+        (
+            "REC-WRONG-HOST",
+            wrong_host,
+            f"record host_id differs from the evaluated host {host.host_id!r}",
+            ["D-02", "section 12.0"],
+        ),
+        (
+            "REC-WRONG-PROFILE",
+            wrong_profile,
+            f"record profile_id differs from the evaluated profile {profile.profile_id!r}",
+            ["CR-025", "MR-018"],
+        ),
+        (
+            "REC-EXPLORATORY",
+            exploratory,
+            "record is marked exploratory and cannot contribute to qualification",
+            ["section 12.0", "NFR-028"],
+        ),
+        (
+            "REC-NOT-ELIGIBLE-PROFILE",
+            not_eligible,
+            "record was produced by a profile it does not consider qualification-eligible",
+            ["MR-018", "CR-025"],
+        ),
+    ):
+        if offenders:
+            findings.append(
+                _finding(
+                    code,
+                    f"{len(offenders)} run record(s): {message}. First: {sorted(offenders)[:5]}",
+                    list(refs),
+                )
+            )
+    return findings
 
 
 def _check_eligibility(
@@ -149,6 +321,77 @@ def _check_eligibility(
                 "ELIG-HOST-NO-POWER-POLICY",
                 "the sustained power/thermal policy is not recorded for this host",
                 ["D-02", "section 12.0"],
+            )
+        )
+
+    dataset_digest = content_digest(dataset)
+    if plan.dataset_digest != dataset_digest:
+        findings.append(
+            _finding(
+                "ELIG-DATASET-DIGEST",
+                f"the plan was built against dataset digest {plan.dataset_digest} "
+                f"but the supplied dataset hashes to {dataset_digest}; the sample "
+                "changed after the plan was frozen",
+                ["section 12.0", "AT-055"],
+            )
+        )
+    profile_digest = content_digest(profile)
+    if plan.profile_digest != profile_digest:
+        findings.append(
+            _finding(
+                "ELIG-PROFILE-DIGEST",
+                f"the plan was built against profile digest {plan.profile_digest} "
+                f"but the supplied profile hashes to {profile_digest}; retuning "
+                "requires a new profile revision and a complete rerun",
+                ["section 12.0", "MR-008", "CR-025"],
+            )
+        )
+    if plan.target_revision != targets.target_revision:
+        findings.append(
+            _finding(
+                "ELIG-TARGET-REVISION",
+                f"the plan targets revision {plan.target_revision!r} but "
+                f"{targets.target_revision!r} was supplied",
+                ["D-02", "section 12.0"],
+            )
+        )
+    if plan.host_id != host.host_id:
+        findings.append(
+            _finding(
+                "ELIG-HOST-IDENTITY",
+                f"the plan was built for host {plan.host_id!r} but {host.host_id!r} was supplied",
+                ["D-02"],
+            )
+        )
+    if plan.profile_id != profile.profile_id:
+        findings.append(
+            _finding(
+                "ELIG-PROFILE-IDENTITY",
+                f"the plan was built for profile {plan.profile_id!r} but "
+                f"{profile.profile_id!r} was supplied",
+                ["CR-025"],
+            )
+        )
+
+    evaluation = profile.license_evaluation
+    if evaluation is None:
+        findings.append(
+            _finding(
+                "ELIG-LICENCE-MISSING",
+                f"engine profile {profile.profile_id!r} carries no licence "
+                "evaluation; C-04 forbids production use without a recorded "
+                "licence review and approved use case",
+                ["C-04", "MR-012", "CR-024"],
+            )
+        )
+    elif not evaluation.use_eligible:
+        findings.append(
+            _finding(
+                "ELIG-LICENCE-NOT-CLEARED",
+                f"licence evaluation {evaluation.evaluation_id} is "
+                f"{evaluation.policy_state!r} with use_eligible=False "
+                f"(block kind {evaluation.eligibility_block_kind!r})",
+                ["C-04", "MR-012", "MR-014", "CR-024"],
             )
         )
 
@@ -398,12 +641,14 @@ def _check_evidence(
                 )
             )
 
-    if len(evidence.fresh_input_packs) < 4:
+    pack_ids = [pack.pack_id for pack in evidence.fresh_input_packs]
+    if len(set(pack_ids)) < 4:
         findings.append(
             _finding(
                 "AT056-FRESH-PACKS",
-                f"{len(evidence.fresh_input_packs)} fresh input pack(s) recorded; "
-                "AT-056 requires four",
+                f"{len(pack_ids)} fresh input pack record(s) covering "
+                f"{len(set(pack_ids))} distinct pack(s); AT-056 requires four "
+                "*different* packs, not four copies of one",
                 ["AT-056", "section 12.0"],
             )
         )
@@ -463,25 +708,7 @@ def _check_evidence(
                 )
             )
 
-    workload = evidence.continuous_workload
-    if workload is None:
-        findings.append(
-            _finding(
-                "OBS-CONTINUOUS-WORKLOAD",
-                f"no continuous {targets.continuous_workload_minutes}-minute workload "
-                "record with thermal/power observations",
-                ["section 12.0"],
-            )
-        )
-    elif workload.duration_minutes < targets.continuous_workload_minutes:
-        findings.append(
-            _finding(
-                "OBS-CONTINUOUS-SHORT",
-                f"continuous workload ran {workload.duration_minutes:.1f} minutes; "
-                f"{targets.continuous_workload_minutes} are required",
-                ["section 12.0"],
-            )
-        )
+    findings.extend(_check_continuous_workload(evidence.continuous_workload, targets))
 
     if evidence.offline_rerun_status is not EvidenceStatus.MEASURED:
         findings.append(
@@ -503,6 +730,120 @@ def _check_evidence(
     return findings
 
 
+def _check_continuous_workload(
+    workload: ContinuousWorkloadRecord | None, targets: TargetSet
+) -> list[EligibilityFinding]:
+    """Section 12.0's sustained run is an outcome, not just a duration.
+
+    A 20-minute record that breached both the latency and memory limits used to
+    satisfy this check, because only ``duration_minutes`` was read.
+    """
+    if workload is None:
+        return [
+            _finding(
+                "OBS-CONTINUOUS-WORKLOAD",
+                f"no continuous {targets.continuous_workload_minutes}-minute workload "
+                "record with thermal/power observations",
+                ["section 12.0"],
+            )
+        ]
+
+    findings: list[EligibilityFinding] = []
+    if workload.duration_minutes < targets.continuous_workload_minutes:
+        findings.append(
+            _finding(
+                "OBS-CONTINUOUS-SHORT",
+                f"continuous workload ran {workload.duration_minutes:.1f} minutes; "
+                f"{targets.continuous_workload_minutes} are required",
+                ["section 12.0"],
+            )
+        )
+    if workload.throttling_observed_status is not EvidenceStatus.MEASURED:
+        findings.append(
+            _finding(
+                "OBS-CONTINUOUS-THERMAL-UNKNOWN",
+                "thermal/power throttling was not measured during the sustained "
+                f"workload (status {workload.throttling_observed_status.value})",
+                ["section 12.0", "D-02"],
+            )
+        )
+    for attribute, code, label in (
+        ("latency_limit_breached", "OBS-CONTINUOUS-LATENCY", "latency"),
+        ("memory_limit_breached", "OBS-CONTINUOUS-MEMORY", "memory"),
+    ):
+        breached = getattr(workload, attribute)
+        if breached is None:
+            findings.append(
+                _finding(
+                    f"{code}-UNKNOWN",
+                    f"the sustained workload did not determine whether the {label} "
+                    "limit was breached; an undetermined result is not a pass",
+                    ["section 12.0", "NFR-028"],
+                )
+            )
+        elif breached:
+            findings.append(
+                _finding(
+                    code,
+                    f"the sustained workload breached its {label} limit",
+                    ["section 12.0"],
+                )
+            )
+
+    memory = workload.peak_memory
+    if memory.status is not EvidenceStatus.MEASURED:
+        findings.append(
+            _finding(
+                "OBS-CONTINUOUS-MEMORY-MISSING",
+                "the sustained workload carries no measured peak-memory observation "
+                f"(status {memory.status.value})",
+                ["section 12.0", "MR-013"],
+            )
+        )
+    else:
+        if memory.method is not MemoryMethod.CGROUP_V2_MEMORY_PEAK:
+            findings.append(
+                _finding(
+                    "OBS-CONTINUOUS-MEMORY-SCOPE",
+                    f"sustained-workload memory used {memory.method.value}, which is "
+                    "not a simultaneous application-group peak",
+                    ["section 12.0", "MR-013"],
+                )
+            )
+        if (
+            memory.peak_bytes is not None
+            and memory.peak_bytes > targets.peak_application_memory_bytes
+        ):
+            findings.append(
+                _finding(
+                    "OBS-CONTINUOUS-MEMORY-EXCEEDED",
+                    f"sustained-workload peak {memory.peak_bytes} bytes exceeds the "
+                    f"{targets.peak_application_memory_bytes} byte limit",
+                    ["section 12.0"],
+                )
+            )
+
+    if workload.swap_reliance_status is not EvidenceStatus.MEASURED:
+        findings.append(
+            _finding(
+                "OBS-CONTINUOUS-SWAP-UNKNOWN",
+                "swap use was not measured during the sustained workload; section "
+                "12.0 requires no swap reliance and absence of evidence is not it",
+                ["section 12.0"],
+            )
+        )
+    elif workload.swap_used_bytes:
+        findings.append(
+            _finding(
+                "OBS-CONTINUOUS-SWAP-USED",
+                f"the sustained workload relied on swap ({workload.swap_used_bytes} "
+                "bytes); section 12.0 forbids swap reliance",
+                ["section 12.0"],
+            )
+        )
+    return findings
+
+
 def evaluate_eligibility(
     *,
     plan: BenchmarkPlan,
@@ -519,9 +860,25 @@ def evaluate_eligibility(
     eligibility = _check_eligibility(
         plan=plan, dataset=dataset, host=host, profile=profile, targets=targets
     )
+    eligibility.extend(_check_plan_integrity(plan, dataset))
+    eligibility.extend(
+        _check_record_identity(plan=plan, records=records, host=host, profile=profile)
+    )
     findings = list(eligibility)
     findings.extend(_check_observations(summaries=summaries, records=records, targets=targets))
     findings.extend(_check_evidence(dataset=dataset, evidence=evidence, targets=targets))
+
+    # Non-overridable. No argument or evidence bundle reaches this.
+    for gap in QUALIFICATION_IMPLEMENTATION_GAPS:
+        findings.append(
+            _finding(
+                "ELIG-QUALIFICATION-IMPLEMENTATION-INCOMPLETE",
+                f"formal qualification is not yet implementable here: {gap}. "
+                "Diagnostics below are reported normally; a section 12.0 pass is "
+                "withheld until the binding exists (Package B/C).",
+                ["section 12.0", "AT-055", "AT-056", "Appendix E.1"],
+            )
+        )
 
     for problem in ledger_problems or []:
         findings.append(
@@ -532,8 +889,9 @@ def evaluate_eligibility(
             )
         )
 
-    if eligibility:
-        # Not eligible to be judged at all: the sample could never qualify.
+    if QUALIFICATION_IMPLEMENTATION_GAPS or eligibility:
+        # Either the sample could never qualify, or this build cannot yet
+        # substantiate a formal pass. Both are NOT_ELIGIBLE, never a pass.
         return QualificationVerdict.NOT_ELIGIBLE, findings
     if any(f.blocking for f in findings):
         return QualificationVerdict.QUALIFYING_FAIL, findings

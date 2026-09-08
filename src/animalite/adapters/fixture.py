@@ -193,7 +193,7 @@ class FixtureAdapter:
         """
         output = context.output
         anchors = context.anchors
-        params = dict(context.profile.parameters)
+        params = context.controls
         ease = str(params.get("ease", "smoothstep"))
         drift = float(params.get("drift_pixels", 0.0))
         indices = anchors.indices

@@ -55,6 +55,7 @@ from animalite.core.validation import validate_request
 from animalite.errors import (
     AdapterError,
     AnimaLiteError,
+    JobTimeoutError,
     OutputInvalidError,
     ValidationRejected,
 )
@@ -360,7 +361,7 @@ class LocalExecutionService:
             adapter = self.registry.adapter_for(profile)
 
             with timed(Stage.DECODE_ANCHORS):
-                anchor_frames = self._decode_anchors(request)
+                anchor_frames = self._decode_anchors(request, remaining())
 
             self._check_cancelled(job)
             accounting = frame_accounting(request.anchors, request.output)
@@ -374,6 +375,7 @@ class LocalExecutionService:
                     output=request.output,
                     anchors=request.anchors,
                     profile=profile,
+                    controls=profile.effective_controls(request.controls),
                     cancel_requested=job.cancel_event,
                 )
                 frames = self._counted_frames(job, adapter.synthesize(context), request)
@@ -512,14 +514,29 @@ class LocalExecutionService:
         if job.cancel_event.is_set():
             raise AdapterError("cancellation requested")
 
-    def _decode_anchors(self, request: RenderRequest) -> dict[int, NDArray[np.uint8]]:
+    def _decode_anchors(
+        self, request: RenderRequest, budget_seconds: float
+    ) -> dict[int, NDArray[np.uint8]]:
+        """Decode every anchor within the *job* deadline, not a private one.
+
+        Each decode previously had its own 60 s timeout, so four anchors could
+        consume four minutes regardless of the job's remaining budget.
+        """
         frames: dict[int, NDArray[np.uint8]] = {}
+        deadline = time.monotonic() + budget_seconds
         for anchor in request.anchors.anchors:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise JobTimeoutError(
+                    "job deadline elapsed while decoding approved anchors "
+                    f"({len(frames)} of {request.anchors.count} decoded)"
+                )
             frames[anchor.animation_index] = decode_image_rgb24(
                 self.tools,
                 Path(anchor.asset.path),
                 width=request.output.width,
                 height=request.output.height,
+                timeout=remaining,
             )
         return frames
 

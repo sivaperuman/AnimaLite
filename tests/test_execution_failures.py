@@ -7,6 +7,7 @@ successful output; a retry creates a new attempt linked to its parent.
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import pytest
 from animalite.adapters.fixture import FIXTURE_PROFILE, FixtureAdapter
 from animalite.adapters.registry import Registry
 from animalite.contracts.enums import FailureCategory, JobState
+from animalite.contracts.media import P_L_FINAL_OUTPUT
 from animalite.core.attempts import AttemptStore
 from animalite.core.service import OUTPUT_FILENAME, LocalExecutionService
 from animalite.errors import AttemptConflictError
@@ -261,4 +263,94 @@ def test_a_validation_rejection_is_recorded_as_a_failed_attempt(tmp_path, fixtur
     assert record.failure is not None
     assert record.failure.category is FailureCategory.VALIDATION_REJECTED
     assert "VAL-CONTROL-UNSUPPORTED" in record.failure.validation_codes
+    _assert_no_published_output(record)
+
+
+# --- R4 regressions: deadlines and teardown across blocking I/O ---------------
+
+
+def _stall_script(tmp_path: Path, seconds: float = 30.0) -> Path:
+    """A child that never reads stdin, so a writer fills the pipe and blocks."""
+    script = tmp_path / "stall.py"
+    script.write_text(f"import time\ntime.sleep({seconds})\n")
+    return script
+
+
+def test_the_deadline_bounds_a_write_to_a_child_that_never_reads(tmp_path):
+    """The pipeline's dominant operation must be interruptible.
+
+    A deadline checked before a blocking `stdin.write()` never fires once the
+    pipe buffer fills: measured 3.06s against a 0.2s deadline, misclassified as
+    an encoder error.
+    """
+    from unittest.mock import patch
+
+    from animalite.contracts.profile import ThreadBudget
+    from animalite.errors import JobTimeoutError
+    from animalite.media import encode as encode_module
+
+    output = P_L_FINAL_OUTPUT
+    frame = b"\x00" * (output.width * output.height * 3)
+
+    def frames():
+        for _ in range(output.delivery_frame_count):
+            yield frame
+
+    argv = [sys.executable, str(_stall_script(tmp_path))]
+    with patch.object(encode_module, "encoder_argv", lambda *a, **k: argv):
+        started = time.monotonic()
+        with pytest.raises(JobTimeoutError, match="deadline"):
+            encode_module.encode_delivery_stream(
+                FFmpegTools.discover(),
+                frames(),
+                output,
+                tmp_path / "out.mp4",
+                thread_budget=ThreadBudget(total_threads=4),
+                timeout_seconds=0.2,
+            )
+        elapsed = time.monotonic() - started
+    assert elapsed < 2.0, f"deadline of 0.2s took {elapsed:.3f}s to fire"
+    assert not (tmp_path / "out.mp4").exists() or (tmp_path / "out.mp4").stat().st_size >= 0
+
+
+def test_a_descendant_that_outlives_its_leader_is_killed(tmp_path):
+    """Killing only the leader leaves grandchildren holding resources."""
+    script = tmp_path / "spawner.py"
+    marker = tmp_path / "descendant.pid"
+    script.write_text(
+        "import os, subprocess, sys, time\n"
+        f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(marker)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(60)\n"
+    )
+    with ManagedProcess([sys.executable, str(script)], stdin=None) as proc:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not marker.exists():
+            time.sleep(0.05)
+        assert marker.exists(), "the child never spawned its descendant"
+        descendant = int(marker.read_text())
+        assert process_alive(descendant)
+        leader = proc.pid
+
+    for pid in (leader, descendant):
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and process_alive(pid):
+            time.sleep(0.05)
+        assert not process_alive(pid), f"pid {pid} survived teardown"
+
+
+def test_teardown_reports_survivors_rather_than_assuming_success(tmp_path):
+    """`survivors` must be empty only when the group really is gone."""
+    with ManagedProcess([sys.executable, "-c", "import time; time.sleep(30)"], stdin=None) as proc:
+        time.sleep(0.2)
+    assert proc.survivors == [], f"teardown left survivors: {proc.survivors}"
+
+
+def test_anchor_decode_is_bounded_by_the_remaining_job_deadline(tmp_path, fixture_anchors):
+    """Anchor decode used its own 60s timeout regardless of the job budget."""
+    service = LocalExecutionService(tmp_path / "ws", tools=FFmpegTools.discover())
+    record = service.render_blocking(make_request(fixture_anchors, timeout_seconds=0.001))
+    assert record.state is JobState.FAILED
+    assert record.failure is not None
+    assert record.failure.category is FailureCategory.TIMEOUT
     _assert_no_published_output(record)

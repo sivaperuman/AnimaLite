@@ -12,7 +12,7 @@ adapter -- fixture, classical or learned -- goes through exactly one media path.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -36,12 +36,19 @@ class AdapterContext:
         output: OutputSpec,
         anchors: AnchorSet,
         profile: EngineProfile,
+        controls: Mapping[str, float | int | str | bool] | None = None,
         cancel_requested: object | None = None,
     ) -> None:
         self.anchor_frames = anchor_frames
         self.output = output
         self.anchors = anchors
         self.profile = profile
+        #: **Effective** controls: profile defaults with the request's validated
+        #: overrides applied. Adapters must read these rather than
+        #: ``profile.parameters`` -- otherwise a request control changes the
+        #: settings digest without changing a pixel, which is precisely what the
+        #: digest exists to detect.
+        self.controls: dict[str, float | int | str | bool] = dict(controls or {})
         self.cancel_requested = cancel_requested
 
 

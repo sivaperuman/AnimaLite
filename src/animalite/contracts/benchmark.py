@@ -25,6 +25,7 @@ __all__ = [
     "QUALIFICATION_CATEGORIES",
     "BenchmarkPlan",
     "BenchmarkReport",
+    "ColdProcessEvidence",
     "ContinuousWorkloadRecord",
     "DatasetClip",
     "DatasetManifest",
@@ -157,6 +158,31 @@ class BenchmarkPlan(Document):
         return {r.run_id for r in self.planned_runs}
 
 
+class ColdProcessEvidence(Contract):
+    """Evidence that a process-cold run really ran in a new process.
+
+    Reconstructing the service inside the same interpreter leaves imports,
+    native initialisation and any resident adapter state warm, so it cannot be
+    called process-cold. Recording the child identity makes the claim checkable
+    instead of asserted. ``os_file_cache_cleared`` is recorded as False because
+    section 12.0 permits a warm OS cache but requires it to be disclosed.
+    """
+
+    child_pid: int | None = None
+    parent_pid: int | None = None
+    interpreter: str | None = None
+    argv: list[str] = Field(default_factory=list)
+    os_file_cache_cleared: bool = False
+    notes: list[str] = Field(
+        default_factory=lambda: [
+            "Cold timing starts before the child interpreter is launched, so "
+            "Python startup, imports, tool discovery and service/adapter "
+            "construction are inside the boundary.",
+            "OS file cache is not cleared: this is process-cold, not disk-cold.",
+        ]
+    )
+
+
 class RunRecord(Document):
     """One executed (or attempted) benchmark run.
 
@@ -184,6 +210,7 @@ class RunRecord(Document):
     profile_id: str
     qualification_eligible_profile: bool = False
     exploratory: bool = True
+    cold_process_evidence: ColdProcessEvidence | None = None
 
     @model_validator(mode="after")
     def _check(self) -> RunRecord:
@@ -265,7 +292,14 @@ class UnsupportedCaseRecord(Document):
 
 
 class ContinuousWorkloadRecord(Document):
-    """The continuous 20-minute workload and its thermal/power observations."""
+    """The continuous 20-minute workload and its thermal/power observations.
+
+    Duration alone is not the test. Section 12.0 asks for thermal/power
+    throttling to be reported *and* for whether latency or memory limits were
+    breached; a 20-minute run that breached both is a failure, not a pass. The
+    breach fields are therefore tri-state: ``None`` means "not determined",
+    which blocks, rather than silently reading as "fine".
+    """
 
     duration_minutes: float = Field(ge=0.0)
     throttling_observed_status: EvidenceStatus = EvidenceStatus.PENDING
@@ -273,7 +307,22 @@ class ContinuousWorkloadRecord(Document):
     latency_limit_breached: bool | None = None
     memory_limit_breached: bool | None = None
     peak_memory: MemoryObservation = MemoryObservation.unavailable("not sampled")
+    #: Section 12.0 "no swap reliance". PENDING/None blocks; it is not assumed.
+    swap_reliance_status: EvidenceStatus = EvidenceStatus.PENDING
+    swap_used_bytes: int | None = Field(default=None, ge=0)
     notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_swap(self) -> ContinuousWorkloadRecord:
+        if self.swap_reliance_status is EvidenceStatus.MEASURED:
+            if self.swap_used_bytes is None:
+                raise ValueError("swap_reliance_status 'measured' requires swap_used_bytes")
+        elif self.swap_used_bytes is not None:
+            raise ValueError(
+                f"swap_reliance_status {self.swap_reliance_status.value!r} must not carry "
+                "swap_used_bytes; an unavailable observation is not a measured zero"
+            )
+        return self
 
 
 class EvidenceBundle(Document):

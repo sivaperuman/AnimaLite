@@ -213,3 +213,83 @@ def test_the_published_clip_actually_plays_back_frame_by_frame(service, fixture_
     )
     assert completed.returncode == 0, completed.stderr.decode()[-500:]
     assert len(completed.stdout) == 144 * 640 * 360 * 3
+
+
+# --- R5 regression: request controls must reach synthesis ---------------------
+
+
+def test_request_controls_change_the_output_not_just_the_digest(service, fixture_anchors):
+    """Accepted, validated, hashed controls were previously ignored at synthesis.
+
+    Two renders differing only in `ease` and `drift_pixels` produced different
+    settings digests and a byte-identical output. A digest that moves while the
+    pixels do not is worse than no digest: it certifies a difference that does
+    not exist.
+    """
+    linear = service.render_blocking(
+        make_request(
+            fixture_anchors,
+            request_id="linear",
+            controls={"ease": "linear", "drift_pixels": 0},
+        )
+    )
+    eased = service.render_blocking(
+        make_request(
+            fixture_anchors,
+            request_id="eased",
+            controls={"ease": "smoothstep", "drift_pixels": 12},
+        )
+    )
+    assert linear.output is not None and eased.output is not None
+    assert linear.settings_digest != eased.settings_digest
+    assert linear.output.content_hash != eased.output.content_hash, (
+        "controls changed the settings digest but not the output"
+    )
+
+
+def test_controls_do_not_alter_approved_anchor_frames(service, fixture_anchors, tools):
+    """Endpoints are approved assets: a control must not move them (C-05)."""
+    from animalite.adapters.base import AdapterContext
+    from animalite.adapters.fixture import FIXTURE_PROFILE, FixtureAdapter
+    from animalite.media.decode import decode_image_rgb24
+
+    frames_by_control = {}
+    cases: list[tuple[str, dict[str, float | int | str | bool]]] = [
+        ("linear", {"ease": "linear", "drift_pixels": 0}),
+        ("eased", {"ease": "smoothstep", "drift_pixels": 12}),
+    ]
+    for label, controls in cases:
+        anchor_frames = {
+            a.animation_index: decode_image_rgb24(tools, Path(a.asset.path), width=640, height=360)
+            for a in fixture_anchors.anchors
+        }
+        context = AdapterContext(
+            anchor_frames=anchor_frames,
+            output=P_L_FINAL_OUTPUT,
+            anchors=fixture_anchors,
+            profile=FIXTURE_PROFILE,
+            controls=FIXTURE_PROFILE.effective_controls(controls),
+        )
+        frames_by_control[label] = list(FixtureAdapter().synthesize(context))
+
+    import numpy as np
+
+    first, second = frames_by_control["linear"], frames_by_control["eased"]
+    # Approved endpoints identical...
+    assert np.array_equal(first[0], second[0])
+    assert np.array_equal(first[71], second[71])
+    # ...and an interior frame genuinely different.
+    assert not np.array_equal(first[35], second[35]), (
+        "an interior frame did not change when the controls did"
+    )
+
+
+def test_effective_controls_merge_profile_defaults_with_request_overrides():
+    from animalite.adapters.fixture import FIXTURE_PROFILE
+
+    defaults = FIXTURE_PROFILE.effective_controls()
+    assert defaults == dict(FIXTURE_PROFILE.parameters)
+    overridden = FIXTURE_PROFILE.effective_controls({"ease": "linear"})
+    assert overridden["ease"] == "linear"
+    # An unspecified default survives the override.
+    assert overridden["drift_pixels"] == FIXTURE_PROFILE.parameters["drift_pixels"]

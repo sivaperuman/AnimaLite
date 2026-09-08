@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from pydantic import Field, model_validator
 
 from animalite.contracts.assets import MAX_ANCHORS, MIN_ANCHORS
@@ -143,6 +145,18 @@ class EngineProfile(Document):
 
     def supports_resolution(self, width: int, height: int) -> bool:
         return any(r.as_tuple() == (width, height) for r in self.supported_resolutions)
+
+    def effective_controls(
+        self, overrides: Mapping[str, float | int | str | bool] | None = None
+    ) -> dict[str, float | int | str | bool]:
+        """Profile defaults with request overrides applied.
+
+        The one place effective settings are computed, so validation and
+        execution cannot disagree about what will actually run.
+        """
+        resolved: dict[str, float | int | str | bool] = dict(self.parameters)
+        resolved.update(overrides or {})
+        return resolved
 
 
 class Capabilities(Document):

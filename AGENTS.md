@@ -62,6 +62,9 @@
 - Do not change acceptance targets to make tests pass.
 - Follow existing repository merge/release authorization; never infer it from a review comment.
 - Keep default CI small, cancel obsolete PR runs and reserve full benchmarks for the target host.
+- Batch commits locally and push one reviewable batch per review round; do not push
+  after every edit or trigger Actions from comment events. Draft PRs skip the
+  runner work but keep one truthful required check.
 
 ## Verified commands
 
@@ -81,9 +84,11 @@ python3 -m venv .venv
 .venv/bin/python -m pytest -m "not slow"      # contract, failure-path, statistics
 .venv/bin/python -m pytest                    # adds tiny end-to-end media tests
 
-# Before pushing, re-run lint with its cache disabled. CI checks out fresh, so a
-# stale .ruff_cache can hide a finding locally that CI will report:
-.venv/bin/ruff check --no-cache . && .venv/bin/ruff format --no-cache --check .
+# The local gate: run this once when a batch is ready, then push ONE reviewable
+# batch. Caches are disabled because CI checks out fresh and a stale .ruff_cache
+# can hide a finding locally that CI will report.
+.venv/bin/ruff check --no-cache . && .venv/bin/ruff format --no-cache --check . \
+  && .venv/bin/mypy && .venv/bin/python -m pytest -q -p no:cacheprovider
 
 # Host inventory
 .venv/bin/animalite doctor

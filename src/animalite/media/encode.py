@@ -12,6 +12,7 @@ rule 5).
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import time
 from collections.abc import Iterable
@@ -134,7 +135,9 @@ def encode_delivery_stream(
                         f"frame {written} has {len(frame)} bytes; expected {frame_bytes} "
                         f"for {output.width}x{output.height} rgb24"
                     )
-                proc.write(frame)
+                # Bounded by the same deadline: a child that stops reading must
+                # not be able to park this loop in the kernel indefinitely.
+                proc.write(frame, deadline=deadline)
                 written += 1
             proc.close_stdin()
             code = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
@@ -144,8 +147,15 @@ def encode_delivery_stream(
                 f"({timeout_seconds:.3f}s total); its process group was killed. "
                 f"stderr: {proc.stderr_text()}"
             ) from exc
+        except TimeoutError as exc:
+            raise JobTimeoutError(
+                f"job deadline of {timeout_seconds:.3f}s elapsed while writing frame "
+                f"{written} of {output.delivery_frame_count} to the encoder; its "
+                f"process group was torn down and no output was published. {exc}"
+            ) from exc
         except BrokenPipeError as exc:
-            proc.wait(timeout=5.0)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=5.0)
             raise EncoderError(
                 f"encoder closed its input after {written} frames: {exc}; "
                 f"stderr: {proc.stderr_text()}"

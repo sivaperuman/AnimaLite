@@ -34,6 +34,17 @@ Status values below:
 
 ## §12.0 clauses
 
+> **Formal qualification is gated shut in this build.**
+> `bench/evaluate.py` carries `QUALIFICATION_IMPLEMENTATION_GAPS`, a
+> non-overridable list of bindings a section 12.0 pass requires but which are
+> not implemented: run evidence is not bound to the executed settings digest,
+> profile revision and verified artifact digests; output manifests are not bound
+> to the source anchor hashes actually executed; and quality/offline/device/
+> workload evidence carries no references tying it to specific runs, outputs or
+> environment. While that list is non-empty the evaluator returns
+> `NOT_ELIGIBLE` for every input, whatever evidence is supplied. Removing
+> entries is Package B/C work (DEC-0014).
+
 | Clause | What exists | Test | Status |
 | --- | --- | --- | --- |
 | Core output: 640×360, 72 animation frames, 12 fps, 144 delivery frames at 24 fps, exactly 6 s | `contracts/media.py::P_L_FINAL_OUTPUT`, `media/cadence.py` | `test_cadence.py::test_core_output_is_exactly_six_seconds`; `test_media_end_to_end.py::test_the_fixture_renders_a_valid_six_second_640x360_clip` (decoded, not asserted from settings) | implemented |
@@ -41,12 +52,17 @@ Status values below:
 | First/last anchors at animation indices 0 and 71 | `AnchorSet.endpoints_match`, `VAL-ANCHOR-ENDPOINTS` | `test_validation.py::test_endpoints_must_sit_at_animation_index_0_and_71` | implemented |
 | 2–4 approved anchors | `AnchorSet` min/max length, `VAL-PROFILE-ANCHOR-LIMIT` | `test_validation.py` (3 tests) | implemented |
 | Warm boundary: submission → encoded file closed **and decodable** | `bench/runner.py` warm path; the boundary includes `validate_output` and `publish` | `test_benchmark_integration.py::test_warm_and_cold_runs_are_recorded_with_distinct_boundaries` | implemented |
-| Process-cold boundary: timer starts before initialization | `bench/runner.py` constructs a fresh service inside the clock | same | implemented; **OS file-cache state is not cleared and the plan notes say so** |
+| Process-cold boundary: timer starts before initialization | `bench/runner.py` launches a **fresh interpreter** inside the clock (`python -m animalite render --request-file`) and records `ColdProcessEvidence` | `test_benchmark_integration.py` (2 tests, incl. cold > warm) | implemented (DEC-0014 R3). Reconstructing the service in-process was **not** process-cold. **OS file cache is not cleared and the record says so** |
 | Preview: 3 s, 320×180, 12 animation fps | `PREVIEW_OUTPUT`, DEC-0005 | `test_media_end_to_end.py::test_the_preview_spec_renders_exactly_three_seconds_at_320x180` | implemented |
 | Preview repetitions (36, three per clip) | DEC-0006; `ELIG-REPETITIONS` blocks a non-conforming plan | `test_evaluator.py` control case | implemented |
 | Nearest-rank p95 `ceil(0.95 × n)`; n=36 → 35, n=12 → max | `bench/stats.py` | `test_stats.py` (18 tests) | implemented |
 | Report n, all observations, median, p95, maximum | `DistributionSummary` | `test_benchmark_integration.py` | implemented |
 | Failure handling: timeout / invalid output / missing observation fails the sample and stays in the ledger | `RunLedger` hash chain + declared plan; `OBS-FAILED-RUNS`, `OBS-MISSING-RUNS`, `LEDGER-INTEGRITY` | `test_ledger.py` (9 tests), `test_evaluator.py::test_deleting_a_failed_run_cannot_manufacture_a_pass` | implemented |
+| Schedule integrity: the declared repetitions must match the actual per-clip schedule | `_check_plan_integrity`, `PLAN-SCHEDULE-MISMATCH`, `PLAN-ORDER-INVALID` | `test_evaluator.py::test_a_plan_whose_header_lies_about_repetitions_is_rejected` | implemented (was a false-pass hole; see DEC-0014 R1) |
+| Record provenance: each record must be the planned run, from the evaluated plan/host/profile, non-exploratory | `_check_record_identity`, `REC-*` findings | `test_evaluator.py::test_records_from_another_profile_or_host_cannot_stand_in` | implemented (DEC-0014 R1) |
+| Input identity: dataset/profile/target/host digests must match the frozen plan | `ELIG-DATASET-DIGEST`, `ELIG-PROFILE-DIGEST`, `ELIG-TARGET-REVISION`, `ELIG-HOST-IDENTITY` | `test_evaluator.py` (2 tests) | implemented (DEC-0014 R1) |
+| Sustained workload is an outcome, not a duration | `_check_continuous_workload`: thermal status, latency/memory breach, group memory scope and limit, swap reliance | `test_evaluator.py` (3 tests) | implemented (DEC-0014 R2) |
+| Licence admission (C-04, CR-024) | `ELIG-LICENCE-NOT-CLEARED`, `ELIG-LICENCE-MISSING` | `test_evaluator.py` | implemented (DEC-0014 R2) |
 | No passing score from successful runs only | evaluator blocks on any failure or missing run | `test_evaluator.py` | implemented |
 | Sample composition 4/4/4, ≥2 two-anchor clips, locked | `ELIG-DATASET-*` findings | `test_evaluator.py` (3 tests) | implemented (**the sample itself is not frozen**) |
 | Batch size one, fixed randomized order with recorded seed | `build_plan`, `ELIG-BATCH-SIZE`; one render at a time enforced by the service | `test_execution_failures.py::test_only_one_render_runs_at_a_time` | implemented |

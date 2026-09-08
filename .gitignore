@@ -12,7 +12,9 @@ venv/
 .coverage
 htmlcov/
 
-# AnimaLite runtime and evidence output (never committed as source)
+# AnimaLite runtime and evidence output (never committed as source).
+# `work/` is the scratch directory used by every documented example command.
+work/
 workspace/
 attempts/
 out/

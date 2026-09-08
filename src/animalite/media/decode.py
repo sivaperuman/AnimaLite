@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from animalite.errors import AdapterError
+from animalite.errors import AdapterError, JobTimeoutError
 from animalite.media.ffmpeg import FFmpegTools
 
 __all__ = ["decode_image_rgb24"]
@@ -58,7 +58,11 @@ def decode_image_rgb24(
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise AdapterError(f"decoding {path} timed out after {timeout}s") from exc
+        # Classified as a timeout, not an adapter fault: the caller passes the
+        # remaining *job* deadline, so expiry here is the deadline firing.
+        raise JobTimeoutError(
+            f"deadline elapsed after {timeout:.3f}s while decoding anchor {path}"
+        ) from exc
 
     expected = width * height * 3
     if completed.returncode != 0 or len(completed.stdout) != expected:

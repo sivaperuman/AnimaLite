@@ -44,7 +44,7 @@ from animalite.contracts.shot import ShotIntent
 from animalite.core.environment import capture_environment
 from animalite.core.logging import StructuredLogger
 from animalite.core.service import LocalExecutionService
-from animalite.errors import AnimaLiteError
+from animalite.errors import AnimaLiteError, ValidationRejected
 from animalite.fixtures.generator import FIXTURE_CLIPS, generate_clip, write_anchor_set
 from animalite.hostinfo.inventory import collect_inventory
 from animalite.media.ffmpeg import FFmpegTools
@@ -420,6 +420,14 @@ def _output_spec(args: argparse.Namespace) -> OutputSpec:
 
 
 def _request(args: argparse.Namespace) -> RenderRequest:
+    # A serialized request round-trips exactly, which is what lets the benchmark
+    # execute an identical job in a fresh process for process-cold timing.
+    request_file = getattr(args, "request_file", None)
+    if request_file:
+        return RenderRequest.model_validate_json(Path(request_file).read_text(encoding="utf-8"))
+
+    if not args.anchors:
+        raise ValidationRejected("--anchors is required unless --request-file is given")
     anchors = AnchorSet.model_validate_json(Path(args.anchors).read_text(encoding="utf-8"))
     output = _output_spec(args)
     controls: dict[str, float | int | str | bool] = {}
@@ -462,7 +470,15 @@ def _add_request_arguments(parser: argparse.ArgumentParser) -> None:
         required=True,
         help="engine profile id (required: rendering never selects an engine implicitly)",
     )
-    parser.add_argument("--anchors", required=True, help="path to an anchor-set JSON file")
+    parser.add_argument("--anchors", default=None, help="path to an anchor-set JSON file")
+    parser.add_argument(
+        "--request-file",
+        default=None,
+        help=(
+            "execute a serialized RenderRequest verbatim. Used by the benchmark's "
+            "process-cold path so the child runs an identical job."
+        ),
+    )
     parser.add_argument("--request-id", default="cli-request", help="request identifier")
     parser.add_argument(
         "--shot-code", default="CLI-SHOT", help="shot code recorded in the manifest"

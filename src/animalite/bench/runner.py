@@ -11,16 +11,23 @@ Timing boundaries follow section 12.0:
   Everything job-specific is inside: anchor decode, synthesis, cadence expansion,
   normalization, encode and the decode validation that proves the file is
   playable.
-* **process-cold** -- the clock starts before the application/worker is
-  constructed, so service construction and tool discovery are inside the
-  boundary. OS file-cache state is *not* cleared, and the record says so: this is
-  process-cold, never disk-cold.
+* **process-cold** -- the clock starts before a **new interpreter process** is
+  launched, so Python startup, imports, tool discovery, service construction,
+  adapter construction and any future model load are all inside the boundary.
+  Reconstructing the service in the *same* interpreter is not process-cold:
+  imports, native initialisation and any resident adapter state are already
+  warm. Each cold run therefore executes `python -m animalite render` as a fresh
+  child and records its pid and start marker as evidence. OS file-cache state is
+  *not* cleared, and the record says so: this is process-cold, never disk-cold.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import random
+import subprocess
+import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -31,6 +38,7 @@ from animalite.contracts.assets import AnchorSet
 from animalite.contracts.base import content_digest
 from animalite.contracts.benchmark import (
     BenchmarkPlan,
+    ColdProcessEvidence,
     DatasetClip,
     DatasetManifest,
     HostRecord,
@@ -116,8 +124,10 @@ def build_plan(
         notes=[
             "Warm runs reuse only application/runtime residency; no cached final "
             "frames or precomputed job features carry over.",
-            "Process-cold runs rebuild the service before the clock starts. The OS "
-            "file cache is NOT cleared; this is process-cold, not disk-cold.",
+            "Process-cold runs launch a fresh interpreter INSIDE the clock, so "
+            "Python startup, imports, tool discovery and service/adapter "
+            "construction are all inside the boundary. The OS file cache is NOT "
+            "cleared; this is process-cold, not disk-cold.",
             "Preview repetitions: 36 independent warm preview requests, three per "
             "clip, recorded as a measurement clarification (DEC-0006).",
         ],
@@ -205,23 +215,90 @@ class BenchmarkRunner:
             label=f"{planned.kind.value}#{planned.repetition}",
         )
 
-        cold = planned.kind is RunKind.COLD_FINAL
+        if planned.kind is RunKind.COLD_FINAL:
+            return self._run_cold(plan, planned, request, started_at, profile)
+
+        service = self._warm(plan)
         clock_start = time.perf_counter()
-        if cold:
-            # Process-cold: service construction and tool discovery are inside
-            # the boundary, matching "start the timer before initialization".
-            service = LocalExecutionService(
-                self.workspace / planned.run_id,
-                registry=self.registry,
-                tools=FFmpegTools.discover(),
-                logger=self.logger,
-            )
-        else:
-            service = self._warm(plan)
         attempt = service.render_blocking(request)
         wall_seconds = time.perf_counter() - clock_start
-
         return self._record_from_attempt(plan, planned, attempt, wall_seconds, started_at, profile)
+
+    def _run_cold(
+        self,
+        plan: BenchmarkPlan,
+        planned: PlannedRun,
+        request: RenderRequest,
+        started_at: str,
+        profile: EngineProfile,
+    ) -> RunRecord:
+        """Execute one process-cold run in a genuinely fresh interpreter.
+
+        The clock starts *before* the child is launched, so interpreter startup,
+        imports, tool discovery and service/adapter construction are all inside
+        the section 12.0 cold boundary.
+        """
+        run_dir = self.workspace / "cold" / planned.run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        request_path = run_dir / "request.json"
+        request_path.write_text(
+            json.dumps(request.to_json_obj(), indent=2, sort_keys=True), encoding="utf-8"
+        )
+
+        argv = [
+            sys.executable,
+            "-m",
+            "animalite",
+            "render",
+            "--request-file",
+            str(request_path),
+            "--profile",
+            self.profile_id,
+            "--workspace",
+            str(run_dir / "ws"),
+            "--json",
+        ]
+        clock_start = time.perf_counter()
+        completed = subprocess.run(  # noqa: S603 - argv list, no shell
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=self.timeout_seconds + 120.0,
+            check=False,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        wall_seconds = time.perf_counter() - clock_start
+
+        if completed.returncode != 0 or not completed.stdout.strip():
+            return self._not_run(
+                plan,
+                planned,
+                f"process-cold child exited {completed.returncode}: "
+                f"{completed.stderr.strip()[-500:]}",
+                outcome=RunOutcome.FAILED,
+            )
+        try:
+            attempt = AttemptRecord.model_validate_json(completed.stdout)
+        except ValueError as exc:
+            return self._not_run(
+                plan, planned, f"process-cold child produced no valid record: {exc}"
+            )
+
+        record = self._record_from_attempt(
+            plan, planned, attempt, wall_seconds, started_at, profile
+        )
+        # Evidence that the run really was a new process, not a reused one.
+        return record.model_copy(
+            update={
+                "cold_process_evidence": ColdProcessEvidence(
+                    child_pid=completed.pid if hasattr(completed, "pid") else None,
+                    parent_pid=os.getpid(),
+                    interpreter=sys.executable,
+                    argv=argv,
+                    os_file_cache_cleared=False,
+                )
+            }
+        )
 
     # ------------------------------------------------------------------ internals
 
@@ -267,7 +344,18 @@ class BenchmarkRunner:
             updated.append(anchor.model_copy(update={"animation_index": new_index}))
         return AnchorSet(anchors=updated)
 
-    def _not_run(self, plan: BenchmarkPlan, planned: PlannedRun, reason: str) -> RunRecord:
+    def _not_run(
+        self,
+        plan: BenchmarkPlan,
+        planned: PlannedRun,
+        reason: str,
+        outcome: RunOutcome = RunOutcome.NOT_RUN,
+    ) -> RunRecord:
+        """Record a run that never produced a service attempt.
+
+        Section 12.0 keeps every attempted run: a setup failure appends a record
+        and the plan continues, rather than silently losing the remainder.
+        """
         from animalite.contracts.enums import FailureCategory
         from animalite.contracts.job import FailureRecord
 
@@ -277,7 +365,7 @@ class BenchmarkRunner:
             clip_id=planned.clip_id,
             kind=planned.kind,
             repetition=planned.repetition,
-            outcome=RunOutcome.NOT_RUN,
+            outcome=outcome,
             failure=FailureRecord(category=FailureCategory.INTERNAL_ERROR, message=reason),
             host_id=self.host.host_id,
             profile_id=self.profile_id,
