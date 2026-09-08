@@ -247,7 +247,7 @@ def test_request_controls_change_the_output_not_just_the_digest(service, fixture
     )
 
 
-def test_controls_do_not_alter_approved_anchor_frames(service, fixture_anchors, tools):
+def test_controls_do_not_alter_approved_anchor_frames(service, fixture_anchors, tools, tmp_path):
     """Endpoints are approved assets: a control must not move them (C-05)."""
     from animalite.adapters.base import AdapterContext
     from animalite.adapters.fixture import FIXTURE_PROFILE, FixtureAdapter
@@ -268,6 +268,7 @@ def test_controls_do_not_alter_approved_anchor_frames(service, fixture_anchors, 
             output=P_L_FINAL_OUTPUT,
             anchors=fixture_anchors,
             profile=FIXTURE_PROFILE,
+            scratch_dir=tmp_path / f"scratch-{label}",
             controls=FIXTURE_PROFILE.effective_controls(controls),
         )
         frames_by_control[label] = list(FixtureAdapter().synthesize(context))
