@@ -1,0 +1,16 @@
+{
+  "schema_version": "animalite.contracts/v1",
+  "dataset_id": "p-l-qualification-sample.TEMPLATE",
+  "revision": 0,
+  "purpose": "development",
+  "locked": false,
+  "clips": [],
+  "notes": [
+    "TEMPLATE ONLY. This file documents the shape of the section 12.0 locked qualification sample; it deliberately contains no clips and cannot qualify anything.",
+    "The real sample freezes 12 six-second in-scope clips: four face/reaction, four bounded hand/arm or body gesture, and four cloth/hair or limited-overlap. Use category values `face_reaction`, `gesture_body` and `cloth_hair_overlap`.",
+    "At least two clips must use exactly two anchors; the remainder may use at most four.",
+    "Each clip locks its intended action, source hashes, anchor indices, masks, settings and quality rubric. First/last anchors map to animation indices 0 and 71.",
+    "Set `purpose` to `qualification` and `locked` to true only once the sample is frozen and the artwork rights are recorded. The evaluator refuses a qualifying verdict while either is unset.",
+    "Keep the tuning/development set separate (section 12.0). Withheld artist-approved interior references are review material, never model inputs."
+  ]
+}

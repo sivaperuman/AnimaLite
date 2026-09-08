@@ -1,0 +1,23 @@
+{
+  "schema_version": "animalite.contracts/v1",
+  "host_id": "development-unapproved",
+  "profile_envelope": "P-L-candidate",
+  "approval": {
+    "schema_version": "animalite.contracts/v1",
+    "approved": false,
+    "decision_id": null,
+    "decision_url": null,
+    "approved_by": null,
+    "approved_at": null,
+    "notes": "No D-02 approval exists. Any timing recorded against this host is exploratory."
+  },
+  "inventory": null,
+  "power_policy": null,
+  "thermal_policy": null,
+  "notes": [
+    "Placeholder host record for development and CI runs.",
+    "Populate `inventory` from `animalite doctor --json` on the machine that actually ran the measurements.",
+    "`approval` may only be filled in from a recorded D-02 decision by the project owner and technical lead. Core count alone is not hardware equivalence.",
+    "Timings taken on a hosted runner are never a P-L result (handoff section 8)."
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": "animalite.contracts/v1",
+  "target_revision": "v0.12-proposed",
+  "approved": false,
+  "approval_decision_id": null,
+  "warm_preview_p95_seconds": 15.0,
+  "warm_final_p95_seconds": 60.0,
+  "warm_final_max_seconds": 90.0,
+  "cold_final_p95_seconds": 90.0,
+  "cold_final_max_seconds": 120.0,
+  "peak_application_memory_bytes": 4294967296,
+  "continuous_workload_minutes": 20,
+  "status_note": "Section 12.0 proposed engineering acceptance targets, transcribed from requirements v0.12 and awaiting D-02 approval. Requirements v0.12 contains no P-L measurements; approving the specification authorizes a feasibility plan, not a claim that these speeds are attainable."
+}

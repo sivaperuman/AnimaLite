@@ -1,0 +1,126 @@
+name: checks
+
+# One small default lane. Handoff v0.2 section 8 and the PR-1 review:
+#   - a single PR-triggered lane; no duplicate push:main full suite;
+#   - draft PRs skip the work but keep one truthful required check;
+#   - scope detection runs BEFORE Python setup so a docs-only PR installs nothing;
+#   - read-only permissions, no secrets, SHA-pinned actions, finite timeout,
+#     concurrency cancellation, one Python/OS lane, caching;
+#   - model downloads, real-model benchmarks and hardware qualification stay out.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  checks:
+    name: lint, types and focused tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Draft PRs keep the check present and green without spending a runner;
+    # `ready_for_review` re-triggers the real work.
+    if: github.event.pull_request.draft == false
+    steps:
+      # actions/checkout v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          # Full history: the scope step diffs the PR base against the checked-out
+          # merge commit. A shallow clone leaves the base unreachable, which is
+          # what produced `fatal: bad object` and silently disabled the selector.
+          fetch-depth: 0
+
+      - name: Detect documentation-only changes
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA:-}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "base commit unavailable; running full checks"
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed="$(git diff --name-only "${BASE_SHA}" HEAD)"
+          echo "changed files:"; echo "${changed:-<none>}"
+          if [ -z "$changed" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Documentation means prose only. An executable or manifest under
+          # docs/ is still code and must not be exempted by its location.
+          if echo "$changed" | grep -qvE '^(docs/.*\.(md|txt|docx)|[^/]*\.md|LICENSE|NOTICE)$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # actions/setup-python v5.3.0 — skipped entirely for docs-only changes.
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
+        if: steps.scope.outputs.code == 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints/dev-linux-cpython311.txt
+
+      - name: Install (verifies the pinned environment resolves)
+        if: steps.scope.outputs.code == 'true'
+        run: |
+          python -m pip install -e ".[dev]" -c constraints/dev-linux-cpython311.txt
+          python -c "import animalite; print('animalite', animalite.__version__)"
+
+      - name: Lint and format
+        if: steps.scope.outputs.code == 'true'
+        run: |
+          ruff check --no-cache .
+          ruff format --no-cache --check .
+
+      - name: Type check
+        if: steps.scope.outputs.code == 'true'
+        run: mypy
+
+      - name: Ensure FFmpeg (tiny media integration checks only)
+        if: steps.scope.outputs.code == 'true'
+        run: |
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+            echo "using preinstalled FFmpeg"
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+          ffmpeg -hide_banner -version | head -1
+
+      - name: Tests
+        if: steps.scope.outputs.code == 'true'
+        # Development-size fixtures only. No model weights are downloaded and no
+        # qualification benchmark runs here; a hosted runner's timing is never a
+        # P-L result.
+        run: pytest -q -p no:cacheprovider
+
+      - name: CLI smoke check
+        if: steps.scope.outputs.code == 'true'
+        run: |
+          animalite --help
+          python -m animalite doctor --json > doctor.json
+          python - <<'PY'
+          import json
+          inventory = json.load(open("doctor.json"))
+          assert inventory["approval"]["approved"] is False, "CI must never claim host approval"
+          print("host inventory recorded; approval:", inventory["approval"]["approved"])
+          PY
+
+      - name: Documentation-only change
+        if: steps.scope.outputs.code != 'true'
+        run: |
+          echo "Documentation-only change: no executable or manifest files touched."
+          echo "Python setup, install, lint, types, media and tests were skipped."
