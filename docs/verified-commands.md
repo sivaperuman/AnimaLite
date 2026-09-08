@@ -41,8 +41,8 @@ Resolved exactly the pinned set: `animalite 0.1.0`, `pydantic 2.13.5`,
 | `ruff check --no-cache .` | `All checks passed!` — exit 0 |
 | `ruff format --no-cache --check .` | `85 files already formatted` — exit 0 |
 | `mypy` (with `.mypy_cache` removed) | `Success: no issues found in 57 source files` — exit 0 (strict mode for `src/`) |
-| `python -m pytest -m "not slow" -q -p no:cacheprovider` | `185 passed, 41 deselected in 60.85s` — exit 0 |
-| `python -m pytest -q -p no:cacheprovider` | `226 passed in 148.51s` — exit 0 |
+| `python -m pytest -m "not slow" -q -p no:cacheprovider` | `187 passed, 41 deselected in 41.96s` — exit 0 |
+| `python -m pytest -q -p no:cacheprovider` | `228 passed in 129.19s` — exit 0 |
 
 > **Why the caches are disabled here.** The first CI run failed on `ruff check`
 > with four `I001` import-order findings that a local `ruff check .` had just
@@ -249,18 +249,38 @@ under `/usr/bin/ffmpeg`).
 | Encoder that consumed every frame then hung | the final wait renewed 100 ms via `max(0.1, …)` | times out, tears down, publishes nothing |
 | Injected `ProcessTimeout(pid=424242, survivors=(777,))` at the cold boundary | `cold_process_evidence=None`, `cleanup_survivor_groups=[]` | `child_pid=424242`, `child_survivor_groups=[777]`, `cleanup_survivor_groups=[777]` |
 
-### A correction our own tests caught
+### A correction our own tests caught — and a wrong argument about it
 
 Making the teardown budget lifecycle-scoped first left a **zombie child**: with
 the budget spent, the post-`SIGKILL` `wait()` got zero seconds, so the process
 was killed but never reaped and still showed under `pgrep -P`.
 `test_a_job_timeout_kills_the_encoder_and_leaves_no_orphan` failed and named it.
 
-Reaping after `SIGKILL` now has its own small bounded allowance. That is **not**
-the reap floor R4.1 removed: that floor let a *still-running* process be reported
-as a success, whereas `SIGKILL` cannot be caught — the process is already dead
-and `waitpid` is collecting a corpse. Skipping it buys nothing and leaves a
-zombie.
+The fix at the time was a fixed 0.5 s reap allowance, defended as "not the reap
+floor R4.1 removed, because `SIGKILL` cannot be caught, so the process is
+already dead." **That defence was wrong** — see §8e. `SIGKILL` cannot be caught
+*or ignored*, which is not the same as dying immediately.
+
+## 8e. Fifth-round repair (R4.2) — the budget is the bound
+
+| Behaviour | Before (`eea04c5`) | After |
+| --- | --- | --- |
+| Stalled post-`SIGKILL` reap, teardown budget 0.100 s | **0.601 s** — `max(left(), 0.5)` opened a fresh window once the budget was spent | **0.100 s**, survivor still recorded |
+| SIGTERM against a child that ignores it | could consume the **entire** budget, leaving nothing for `SIGKILL` or the reap | bounded share; the remainder is reserved for the forced kill and collection |
+| An uncollected (zombie) child | reported as a **leaked process group**, failing an attempt that cleaned up correctly | collected by the sweep; a zombie-only group is not "alive" |
+
+### Why the earlier argument was wrong
+
+The 0.5 s reap allowance was defended on the grounds that `SIGKILL` cannot be
+caught, so the process must already be dead and `waitpid` is only collecting a
+corpse. `SIGKILL` cannot be caught *or ignored* — but a process in
+**uninterruptible sleep** does not die until it leaves that state, and `wait()`
+then burns its entire timeout. The measurement above is that case.
+
+The general lesson is the one this PR has now learned four times: an allowance
+added next to a bound weakens the bound, and a persuasive reason for the
+allowance does not change that. The bound is now the only thing that decides,
+and what cannot be finished inside it is *reported* rather than waited for.
 
 ## 9. Benchmark harness against the fixtures
 

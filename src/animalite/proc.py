@@ -57,11 +57,10 @@ _POLL_SECONDS = 0.02
 #: measured, `timeout=0.3, grace=1.0` returned at 1.310 s.
 TEARDOWN_BUDGET_SECONDS = 5.0
 
-#: Bounded allowance for collecting the exit status of a process that has
-#: already been SIGKILLed, so a killed child is not left as a zombie when the
-#: teardown budget is spent. It buys a dead process no time; see the note in
-#: :meth:`ManagedProcess.terminate_tree`.
-_REAP_AFTER_KILL_SECONDS = 0.5
+#: Share of the teardown budget offered to SIGTERM before SIGKILL. The rest is
+#: reserved for the forced kill and collecting the result, so a slow graceful
+#: exit cannot leave the forced path with nothing.
+_TERM_SHARE = 0.5
 
 
 class ProcessFailure(Exception):
@@ -331,27 +330,40 @@ class ManagedProcess:
             return max(0.0, budget - time.monotonic())
 
         if self.process.poll() is None:
+            # SIGTERM gets a bounded *share* of the budget, not all of it.
+            # Letting the graceful phase spend everything left nothing for the
+            # forced kill and its reap, which turned a killed encoder into a
+            # zombie that the sweep below then reported as a leaked group.
             self._signal_group(signal.SIGTERM)
-            while left() > 0 and self.process.poll() is None:
-                time.sleep(min(0.02, left()))
+            graceful = min(budget, time.monotonic() + self.grace_seconds * _TERM_SHARE)
+            while time.monotonic() < graceful and left() > 0 and self.process.poll() is None:
+                time.sleep(min(0.02, max(0.0, graceful - time.monotonic())) or 0.001)
             if self.process.poll() is None:
                 self._signal_group(signal.SIGKILL)
-                # Reaping after SIGKILL is bookkeeping, not waiting for
-                # cooperation: SIGKILL cannot be caught, so `waitpid` returns as
-                # soon as the kernel finishes tearing the process down. This is
-                # NOT the reap floor that made the deadline non-authoritative --
-                # that one let a *still-running* process be reported as a
-                # success. Here the process is already dead, and skipping the
-                # reap only leaves a zombie behind. Bounded, and not spendable
-                # again: a later call finds `poll()` non-None and skips it.
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    self.process.wait(timeout=max(left(), _REAP_AFTER_KILL_SECONDS))
+                # SIGKILL cannot be caught, but that does NOT mean the child is
+                # already dead: a process in uninterruptible sleep stays alive
+                # until it leaves that state, and `wait()` then burns its whole
+                # timeout. An earlier version granted a fixed 0.5 s here on the
+                # reasoning that it was only collecting a corpse; measured, a
+                # stalled reap turned a 0.100 s budget into 0.601 s. The budget
+                # is the bound. When it is spent, one non-blocking collection
+                # attempt, and an uncollected child is reported as a survivor
+                # rather than waited for.
+                remaining = left()
+                if remaining > 0:
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        self.process.wait(timeout=remaining)
+                else:
+                    self.process.poll()
 
         if self._group_id is None:
             return
-        # The leader is gone; sweep the group for descendants that outlived it.
+        # Sweep the group for descendants that outlived the leader. The leader
+        # is polled each round too: an exited child that has not been collected
+        # is a zombie, and a zombie keeps its pid in the group.
         self._signal_group(signal.SIGKILL)
         while True:
+            self.process.poll()
             if not self._group_alive():
                 # A later call must not erase evidence an earlier one
                 # established: the leak happened, whatever the group looks like
@@ -365,7 +377,14 @@ class ManagedProcess:
         self.survivors = [self._group_id]
 
     def _group_alive(self) -> bool:
-        """True while any process remains in the owned group."""
+        """True while any **running** process remains in the owned group.
+
+        A zombie is not a survivor. It holds no CPU, no memory and no file
+        descriptors -- it is an uncollected exit status, and reporting it as a
+        leaked process group would fail attempts that cleaned up correctly.
+        ``killpg(gid, 0)`` cannot tell the two apart, because a zombie still
+        owns its pid, so a positive answer there is confirmed against ``/proc``.
+        """
         if self._group_id is None or not _POSIX:
             return False
         try:
@@ -374,7 +393,32 @@ class ManagedProcess:
             return False
         except PermissionError:  # pragma: no cover - foreign process in the group
             return True
-        return True
+        members = self._live_group_members()
+        if members is None:  # pragma: no cover - /proc unavailable
+            # Cannot distinguish; report alive rather than assume clean.
+            return True
+        return bool(members)
+
+    def _live_group_members(self) -> list[int] | None:
+        """Pids in the owned group that are not zombies, or ``None`` if unknown."""
+        proc_dir = Path("/proc")
+        if not proc_dir.is_dir():  # pragma: no cover - non-Linux
+            return None
+        live: list[int] = []
+        for entry in proc_dir.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                stat = (entry / "stat").read_text(encoding="utf-8")
+            except OSError:
+                continue  # exited between listing and reading
+            fields = stat.rpartition(")")[2].split()
+            if len(fields) < 3:  # pragma: no cover - malformed
+                continue
+            state, _ppid, pgrp = fields[0], fields[1], fields[2]
+            if pgrp == str(self._group_id) and state != "Z":
+                live.append(int(entry.name))
+        return live
 
     def _signal_group(self, sig: signal.Signals) -> None:
         if not _POSIX:  # pragma: no cover - Windows fallback

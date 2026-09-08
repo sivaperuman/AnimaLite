@@ -11,6 +11,8 @@
   — held R1/R2/R6 resolved and returned R3/R4/R5 as partial a second time.
 * **Fourth review:** https://github.com/sivaperuman/AnimaLite/pull/1#issuecomment-5586446062
   — resolved R5, and returned R3 and R4 as partial with four fail-open paths.
+* **Fifth review:** https://github.com/sivaperuman/AnimaLite/pull/1#issuecomment-5586819453
+  — resolved R3; one R4.2 teardown bound remained.
 * **Reviewed head:** `0e2c1a98dc4c190bc70b8ce9c281f34abd929375`; follow-up
   reviewed `8ba39f5d0a9e1666f6a4f7c7b7f8e002f57b7c50`.
 
@@ -105,18 +107,50 @@ One of them was again a regression introduced by the third round's own fix.
 | R4.2(d) | One literal renewed allowance remained: the encoder's final wait was `max(0.1, deadline - now)`, so an encoder that consumed every frame and then hung got another 100 ms | Fixed: expired means expired — tear down and raise |
 | R4.3(b) | The outer cold timeout caught the structured `ProcessTimeout` as a broad `TimeoutError` and dropped its fields. An injected `ProcessTimeout(pid=424242, survivors=(777,))` produced `cold_process_evidence=None` and `cleanup_survivor_groups=[]` | Fixed: best-available evidence is built from the exception plus any marker on disk. A plain third-party `TimeoutError` still records `child_pid=None` rather than inventing one |
 
-### One correction found by our own tests, not by review
+### A correction, and then a correction to the correction
 
 Making the teardown budget lifecycle-scoped initially left a **zombie child**:
 with the budget spent, the post-`SIGKILL` `wait()` got zero seconds, so the
 process was killed but never reaped and still appeared under `pgrep -P`.
 `test_a_job_timeout_kills_the_encoder_and_leaves_no_orphan` caught it.
 
-Reaping after `SIGKILL` now has its own small bounded allowance. This is *not* a
-reinstatement of the reap floor that R4.1 removed, and the distinction is the
-whole point: that floor let a **still-running** process be reported as a
-success, whereas `SIGKILL` cannot be caught, so the process is already dead and
-`waitpid` is collecting a corpse. Skipping it buys nothing and leaves a zombie.
+The fix at the time was a fixed 0.5 s allowance for the post-`SIGKILL` reap,
+argued as "not the reap floor R4.1 removed, because `SIGKILL` cannot be caught,
+so the process is already dead and `waitpid` is collecting a corpse."
+
+**That argument was wrong, and the fifth review corrected it.** `SIGKILL` cannot
+be *caught or ignored*, which is not the same as *dies immediately*: a process
+in uninterruptible sleep stays alive until it leaves that state, and `wait()`
+then burns its whole timeout. Measured on the head that carried the allowance: a
+stalled reap turned a 0.100 s budget into **0.601 s**. It was the same
+"allowance after the bound" pattern, wearing a better argument. See the fifth
+round below for the actual fix.
+
+## Fifth round: the teardown budget becomes the hard bound
+
+R3 was accepted. One R4.2 bound remained, and fixing it properly required
+correcting a *reasoning* error of ours, not just a code path.
+
+| ID | Reproduced as | Disposition |
+| --- | --- | --- |
+| R4.2(e) | The post-`SIGKILL` reap took `max(left(), 0.5)`, so once the budget was spent it opened a fresh 0.5 s window. With a stalled reap, a 0.100 s budget produced **0.601 s** of teardown | Fixed: the budget is the bound. Within it, `wait(left())`; with none left, one non-blocking `poll()`, and an uncollected child is retained as survivor evidence rather than waited for. Measured after: **0.100 s** exactly |
+
+Two further defects surfaced while fixing it, both found by our own tests:
+
+* **SIGTERM could consume the entire budget**, leaving nothing for the forced
+  kill and its reap — which is what produced the zombie in the first place.
+  The graceful phase now gets a bounded *share* (`_TERM_SHARE`), and the rest is
+  reserved for `SIGKILL` and collection. Still one total budget, never exceeded.
+* **A zombie was reported as a leaked process group.** `killpg(gid, 0)` succeeds
+  for a zombie because it still owns its pid, so any uncollected exit status
+  looked like a leak — and a leak fails the attempt. A zombie holds no CPU, no
+  memory and no descriptors; it is an uncollected exit status, not a leaked
+  process. The positive `killpg` answer is now confirmed against `/proc`, and
+  the sweep polls the leader so it gets collected.
+
+That second one mattered beyond this bug: without it, `CleanupFailed` would have
+fired on attempts that cleaned up correctly, which is a false failure rather
+than a false pass but is still evidence that does not describe what happened.
 
 ## The qualification implementation gate (R1)
 

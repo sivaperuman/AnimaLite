@@ -7,6 +7,7 @@ successful output; a retry creates a new attempt linked to its parent.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -699,3 +700,87 @@ def test_an_encoder_that_hangs_after_the_last_frame_still_times_out(tmp_path):
         elapsed = time.monotonic() - started
     assert elapsed < 6.0, f"the hung encoder was waited on for {elapsed:.3f}s"
     assert not destination.exists(), "nothing may be published when the encoder hangs"
+
+
+# --- R4.2 round 5: the teardown budget is the hard bound ---------------------
+
+
+def test_a_stalled_reap_cannot_exceed_the_teardown_budget(tmp_path, monkeypatch):
+    """SIGKILL does not prove the child is already dead.
+
+    A process in uninterruptible sleep stays alive until it leaves that state,
+    so the post-SIGKILL `wait()` can burn its whole timeout. An earlier version
+    granted a fixed 0.5 s here, reasoning that it was only collecting a corpse;
+    measured, a stalled reap turned a 0.100 s budget into 0.601 s. Simulated
+    deterministically: `wait()` consumes its timeout and raises.
+    """
+    from animalite.proc import ManagedProcess
+
+    script = tmp_path / "ignores_term.py"
+    script.write_text(
+        "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(30)\n"
+    )
+    budget = 0.2
+    proc = ManagedProcess([sys.executable, str(script)], grace_seconds=budget)
+    real_wait = proc.process.wait
+    try:
+        time.sleep(0.1)
+
+        def stalled_wait(timeout=None):
+            if timeout:
+                time.sleep(timeout)
+            raise subprocess.TimeoutExpired(proc.argv, timeout or 0.0)
+
+        monkeypatch.setattr(proc.process, "wait", stalled_wait)
+        monkeypatch.setattr(proc, "_group_alive", lambda: True)
+
+        started = time.monotonic()
+        proc.terminate_tree()
+        after_teardown = time.monotonic() - started
+        proc.close()  # must not open a second wait
+        total = time.monotonic() - started
+    finally:
+        monkeypatch.undo()
+        proc.process.kill()
+        real_wait()
+
+    assert after_teardown <= budget + 0.25, (
+        f"teardown took {after_teardown:.3f}s against a {budget:.2f}s budget; the "
+        "post-SIGKILL reap is waiting outside the bound"
+    )
+    assert total <= budget + 0.3, (
+        f"teardown plus close took {total:.3f}s; close() opened another wait"
+    )
+    assert proc.survivors, "a group that never clears must be retained as survivor evidence"
+
+
+def test_a_zombie_is_not_reported_as_a_leaked_process_group(tmp_path):
+    """A zombie holds no resources; calling it a survivor fails clean attempts.
+
+    `killpg(gid, 0)` succeeds for a zombie because it still owns its pid, so the
+    positive answer is confirmed against /proc.
+    """
+    from animalite.proc import ManagedProcess
+
+    script = tmp_path / "exits_now.py"
+    script.write_text("raise SystemExit(0)\n")
+    proc = ManagedProcess([sys.executable, str(script)], grace_seconds=1.0)
+    try:
+        # Wait for the child to become a zombie without reaping it.
+        deadline = time.monotonic() + 10.0
+        state = ""
+        while time.monotonic() < deadline:
+            try:
+                stat = Path(f"/proc/{proc.pid}/stat").read_text()
+            except OSError:  # pragma: no cover - reaped by someone else
+                break
+            state = stat.rpartition(")")[2].split()[0]
+            if state == "Z":
+                break
+            time.sleep(0.01)
+        assert state == "Z", f"child never became a zombie (state {state!r})"
+
+        assert not proc._group_alive(), "a zombie-only group must not count as alive"
+    finally:
+        proc.close()
+    assert not proc.survivors, "a zombie must not be recorded as a leaked group"
