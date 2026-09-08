@@ -109,9 +109,19 @@ python3 -m venv .venv
     --warm-repetitions 1 --cold-repetitions 1 --preview-repetitions 1
 ```
 
-**Model-dependent and qualification commands do not exist yet.** No command in
-this repository downloads weights, runs a learned model, or produces
-qualification evidence. The prerequisites for those are: an integrated learned
-CPU adapter with verified code/weight licenses (Package B), the D-02-approved
-P-L host and signed §12.0 targets, the frozen 12-clip sample with rights records,
-and two named quality reviewers (Package C).
+```bash
+# Learned CPU path (Package B). The runtime is installed out of band; nothing is
+# committed and CI never downloads it.
+.venv/bin/animalite runtime fetch          # prints pinned URL + digests only
+.venv/bin/animalite runtime status         # verifies binary and weight digests
+.venv/bin/animalite render --profile rife-ncnn-v4.6-cpu \
+    --anchors work/fixture/fixture-two-anchor/anchors.json --workspace work/ws
+```
+
+**Qualification commands still do not exist.** A learned model now runs, but no
+command here produces qualification evidence. The remaining prerequisites are:
+the D-02-approved P-L host and signed §12.0 targets, the frozen 12-clip sample
+with rights records, two named quality reviewers, and a signed-off licence
+disposition for the model weights (DEC-0013). Until those exist the benchmark
+evaluator refuses a qualifying verdict, and it is the component that decides —
+not a render.

@@ -370,8 +370,115 @@ A media-dependent test reports *pending*; it never passes vacuously.
 | 2 | request is invalid | `validate` with an unsupported control |
 | 3 | required tooling unavailable | `doctor` with FFmpeg missing |
 
+## 12. Package B — the learned CPU path
+
+All measurements below are on the same unapproved development container. They
+are **exploratory**; none is a P-L result.
+
+### Runtime provisioning and verification
+
+```bash
+animalite runtime fetch     # prints the pinned URL and digests; downloads nothing
+animalite runtime status
+```
+
+```
+runtime root : /root/.local/share/animalite/runtimes
+binary       : .../rife-ncnn-vulkan-20221029/rife-ncnn-vulkan
+model        : rife-v4.6
+verified     : binary=True weights=True
+usable       : True
+  rife-v4.6    v4 (flownet only)                        arbitrary-timestep
+  rife-anime   v2-era (flownet + contextnet + fusionnet) MIDPOINT ONLY
+```
+
+With the runtime absent, `animalite validate --profile rife-ncnn-v4.6-cpu` exits
+**2** with `VAL-RUNTIME-UNVERIFIED` and an actionable remediation, and the
+runtime-dependent tests report `PENDING (not run)` rather than passing.
+
+### End-to-end learned render
+
+```bash
+animalite render --profile rife-ncnn-v4.6-cpu \
+  --anchors work/fx/fixture-two-anchor/anchors.json --workspace work/ws
+```
+
+```
+state     : succeeded
+decoded   : 640x360 h264/High yuv420p 144 frames @ 24/1 = 6.0s
+frames    : source=2 synthesized=70 duplicated=72 (animation=72, delivery=144)
+qualifying: False
+            profile 'rife-ncnn-v4.6-cpu' is qualification-eligible, but a single
+            render is not qualification evidence: AT-055/AT-056 require the locked
+            12-clip sample on the D-02-approved P-L host ...; licence evaluation
+            license-eval:rife-ncnn-20221029 is 'pending' (use_eligible=False)
+```
+
+Stage breakdown (35.85 s total):
+
+| stage | seconds |
+| --- | --- |
+| validate | 0.023 |
+| decode_anchors | 0.150 |
+| **temporal_synthesis** | **35.338** |
+| encode | 0.253 |
+| validate_output | 0.084 |
+| publish | 0.000 |
+
+Adapter notes recorded on the attempt: `invocations=70`, `subprocess
+wall=31.972s (0.457s per synthesized frame, including one model load each)`.
+
+### Device evidence
+
+```
+inference_device_status: measured   inference_device: cpu
+  - Inference invoked with -g -1, which selects ncnn's CPU path explicitly.
+  - Positive evidence: the runtime could not create a Vulkan instance on this
+    host, so a GPU path was unavailable, not merely unselected.
+```
+
+The upstream binary links `libvulkan` and attempts instance creation at startup
+regardless of `-g`; on this host that fails (`vkCreateInstance failed -9`), which
+is stronger evidence than the flag we pass ourselves.
+
+### Learned synthesis versus a cross-fade
+
+Interpolating anchors 8 animation frames apart, with the true frame available:
+
+| image | subject centroid x | solid-subject pixels |
+| --- | --- | --- |
+| anchor idx 0 | 138.89 | 10 027 |
+| anchor idx 8 | 179.77 | 10 061 |
+| ground truth idx 4 | 159.21 | 10 029 |
+| **RIFE t=0.5** | **159.84** | **10 046** |
+| naive 50/50 cross-fade | 158.86 | **5 408** |
+
+`MAE(RIFE, truth) = 0.187` against `MAE(blend, truth) = 1.577`. A cross-fade
+leaves two half-opacity ghosts, so it retains roughly half the solid-subject
+pixels. Asserted in `tests/test_rife_adapter.py`, which the fixture adapter
+would fail.
+
+### Benchmark with the learned profile
+
+```
+verdict : not_eligible
+profile : rife-ncnn-v4.6-cpu (qualification_eligible=True)
+  warm_final  planned=1 succeeded=1 median=35.411 p95=35.411 (index 1)
+blocking findings: 19
+  - [ELIG-LICENCE-NOT-CLEARED] ... use_eligible=False (block kind 'resolvable')
+  - [ELIG-HOST-UNAPPROVED] ...
+```
+
+The run succeeded and the verdict is still `not_eligible` — now blocked by the
+licence position, the unapproved host and the unlocked dataset, **not** by the
+absence of a learned component. `ELIG-PROFILE-NOT-LEARNED` and
+`ELIG-NO-LEARNED-TEMPORAL` no longer appear for this profile.
+
 ## Commands that do **not** exist
 
-No command in this repository downloads model weights, executes a learned model,
-runs the §12.0 qualification matrix, or produces qualification evidence. Their
-prerequisites are listed in `docs/verification/package-a-traceability.md`.
+No command in this repository runs the §12.0 qualification matrix or produces
+qualification evidence, and none downloads model weights: `animalite runtime
+fetch` prints instructions and digests but performs no download, and CI never
+installs the runtime. A learned model does now execute (§12 above), which is an
+engineering result and not a qualification. Remaining prerequisites are listed in
+`docs/verification/package-a-traceability.md`.

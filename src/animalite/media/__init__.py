@@ -12,6 +12,7 @@ from animalite.media.cadence import (
 from animalite.media.decode import decode_image_rgb24
 from animalite.media.encode import EncodeOutcome, encode_delivery_stream, encoder_argv
 from animalite.media.ffmpeg import FFmpegTools, probe_tool
+from animalite.media.image import write_png_rgb24
 from animalite.media.probe import probe_output, validate_output
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "probe_output",
     "probe_tool",
     "validate_output",
+    "write_png_rgb24",
 ]

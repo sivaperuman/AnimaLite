@@ -1,7 +1,8 @@
 # AnimaLite
 
-**Status: Package A — CPU execution foundation and benchmark harness. No learned
-model is integrated. No performance target has been measured or met.**
+**Status: Package B in progress — one learned CPU model (RIFE via ncnn) is now
+integrated behind the common adapter interface. No §12.0 performance target has
+been measured on an approved host, and no qualification has been attempted.**
 
 AnimaLite is the implementation of the *Frame-Conditioned 2D AI Video Production
 System* requirements (v0.12). Its objective is to produce a short, useful video
@@ -25,19 +26,25 @@ pipeline end to end without any model weights or private artwork.
 | Reproducible synthetic fixture generator and fixture adapter (deterministic, **not** learned) | Working |
 | Host/environment inventory (`animalite doctor`) | Working |
 | Benchmark harness: run ledger, stage/end-to-end timing, process-group memory where supported, median / nearest-rank p95 / maximum, failed-and-missing-run retention, qualification eligibility evaluator | Working |
-| Learned CPU temporal model (RIFE/ncnn candidate) | **Not implemented** — Package B |
+| Learned CPU temporal model (`rife-ncnn-v4.6-cpu`, CPU-only) | Working — runtime installed out of band and hash-verified |
 | Classical warp/flow comparator | **Not implemented** — Package B |
 | §12.0 qualification measurements (AT-055 / AT-056) | **Not run** — Package C, and blocked on the D-02 host approval |
 | Web/review UI, project storage, queue, export, cloud or GPU execution, training | **Out of scope** for this stage |
 
 ## What this repository does *not* claim
 
-* **No learned-model performance has been demonstrated.** The only adapter that
-  exists is `fixture-synthetic`, a deterministic anchor blend. Section 9 of the
-  requirements (MR-018) states that cross-fades, camera transforms and repeated
-  source frames cannot satisfy learned temporal capability. Every artifact the
-  fixture adapter produces is labelled non-qualifying in its output manifest, its
-  run records and its benchmark report.
+* **No qualified learned-model performance has been demonstrated.** A learned
+  model now runs, and its output is measurably real temporal synthesis rather
+  than a cross-fade — but that is an engineering result, not a §12.0 result.
+  `fixture-synthetic` remains a deterministic anchor blend and is labelled
+  non-qualifying everywhere; MR-018 excludes cross-fades from learned temporal
+  capability. A learned render is *also* not qualification evidence on its own,
+  and its manifest says so with the actual reasons.
+* **The model's licence position is recorded as unresolved.** RIFE's code and
+  weights are both MIT upstream, but the ncnn-format conversion chain has not
+  been reviewed, so the profile is `use_eligible: false` and the benchmark
+  evaluator blocks qualification. Development is unaffected. See
+  `docs/decisions/DEC-0013-rife-licence-position.md`.
 * **No timing here is a P-L result.** Section 12.0's warm/cold/preview targets
   are *proposed* engineering targets awaiting D-02 approval. Any number produced
   on a developer or hosted machine is exploratory. The benchmark evaluator
@@ -52,7 +59,11 @@ pipeline end to end without any model weights or private artwork.
 * An **externally installed** FFmpeg providing `ffmpeg` and `ffprobe` on `PATH`
   (or pointed at by `ANIMALITE_FFMPEG` / `ANIMALITE_FFPROBE`). FFmpeg is not
   bundled or vendored here; see `THIRD_PARTY_NOTICES.md` and `docs/licensing.md`.
-* No GPU, no network access at run time, and no model weights are required.
+* No GPU and no network access at run time.
+* The **fixture** profile needs no weights. The **learned** profile needs the
+  pinned RIFE/ncnn runtime, installed out of band — nothing is committed and CI
+  never downloads it. Run `animalite runtime fetch` for the pinned steps and
+  `animalite runtime status` to confirm the digests verify.
 
 ## Install and verify
 
@@ -111,7 +122,7 @@ src/animalite/errors.py    exception hierarchy and stable validation codes (leaf
 src/animalite/proc.py      child-process group management (leaf)
 src/animalite/resources.py thread budget and peak-memory sampling (leaf)
 src/animalite/core/        validation, execution service, attempt store
-src/animalite/adapters/    motion adapter protocol + fixture (non-learned) adapter
+src/animalite/adapters/    adapter protocol, fixture (non-learned) and RIFE/ncnn (learned) adapters
 src/animalite/media/       ffmpeg discovery, cadence, streaming encode, probe validation
 src/animalite/bench/       benchmark runner, ledger, statistics, eligibility evaluator
 src/animalite/hostinfo/    host and tool inventory

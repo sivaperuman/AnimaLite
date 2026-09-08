@@ -105,7 +105,10 @@ Status values below:
 | MR-013 | Thread budget, memory method, storage and stage timings recorded per attempt | Partial — setup/attempt/cost fields await real profiles |
 | MR-015 | No network client exists in the package; `DeviceEvidence.network_calls_observed_status` is `pending`, not asserted | **No** — honest `pending`, not a claim |
 | MR-016 | `EngineProfile` declares class, tiers, required assets and CPU-only guarantee | Implementation evidence only |
-| MR-018 | **Structurally cannot be satisfied here.** Three independent mechanisms prevent a false claim (DEC-0008) | **No** |
+| MR-018 | Package B integrates a learned model whose temporal participation is **measured**, not declared: it synthesizes a moving subject (MAE 0.187 vs ground truth) where a cross-fade does not (1.577), asserted in `tests/test_rife_adapter.py`. The fixture adapter remains structurally barred (DEC-0008). | **No.** The capability is evidenced; the *requirement* needs the locked sample on the D-02-approved host under AT-055/AT-056. |
+| MR-015 | Learned inference runs with explicit `-g -1`; on this host Vulkan cannot initialise at all, recorded as positive device evidence. `network_calls_observed_status` remains `pending`. | Partial — device evidence measured, offline behaviour still unevidenced |
+| MR-012 | Code, runtime and **weight** licences recorded separately from primary sources; the conversion chain is `pending`/`use_eligible=false` (DEC-0013) | No — deliberately unresolved, and it blocks qualification |
+| C-04 | The evaluator blocks qualification on `ELIG-LICENCE-NOT-CLEARED`, and on `ELIG-LICENCE-MISSING` when a profile carries no evaluation at all | Implementation evidence only |
 | NFR-002 | Failed attempts retain diagnostics; retry creates a new linked attempt | Implementation evidence only |
 | NFR-003 | Anchors, outputs, settings and the ledger are all content-hashed | Implementation evidence only |
 | NFR-013 | Structured JSONL logs per attempt with stage, duration, failure category | Implementation evidence only |
@@ -120,8 +123,8 @@ Status values below:
 
 | Prerequisite | State |
 | --- | --- |
-| A learned CPU temporal adapter with participating learned synthesis | Not implemented (Package B) |
-| Verified upstream code + weight licences for that adapter | Not started (LIC-05) |
+| A learned CPU temporal adapter with participating learned synthesis | **Implemented** (`rife-ncnn-v4.6-cpu`), participation measured |
+| Verified upstream code + weight licences for that adapter | Evidence gathered; **disposition unresolved** (DEC-0013, LIC-05) |
 | D-02-approved P-L host with recorded SKU, power and thermal policy | Not approved |
 | D-02-signed §12.0 targets | Not signed — targets remain proposed |
 | Frozen 12-clip sample with locked hashes, indices and rights records | Not frozen (LIC-07) |
@@ -129,9 +132,10 @@ Status values below:
 | Four fresh input packs; four unsupported cases; offline rerun; device trace | Not produced |
 
 Every one of these is checked by `bench/evaluate.py`, and each missing item
-produces a specific blocking finding. Running the harness today against the
-fixtures yields `verdict: not_eligible` with 19 blocking findings — see
-`docs/verified-commands.md`.
+produces a specific blocking finding. Running the harness today yields
+`verdict: not_eligible` for **both** profiles — for the fixture because it has no
+learned component, and for `rife-ncnn-v4.6-cpu` because of the licence position,
+the unapproved host and the unlocked dataset. See `docs/verified-commands.md`.
 
 ## Phase gate position
 

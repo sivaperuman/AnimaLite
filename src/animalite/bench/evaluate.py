@@ -288,6 +288,29 @@ def _check_eligibility(
                 ["MR-018"],
             )
         )
+    evaluation = profile.license_evaluation
+    if evaluation is None:
+        findings.append(
+            _finding(
+                "ELIG-LICENCE-MISSING",
+                f"engine profile {profile.profile_id!r} carries no licence "
+                "evaluation; C-04 forbids production use without a recorded "
+                "licence review and approved use case",
+                ["C-04", "MR-012", "CR-024"],
+            )
+        )
+    elif not evaluation.use_eligible:
+        findings.append(
+            _finding(
+                "ELIG-LICENCE-NOT-CLEARED",
+                f"licence evaluation {evaluation.evaluation_id} is "
+                f"{evaluation.policy_state!r} with use_eligible=False "
+                f"(block kind {evaluation.eligibility_block_kind!r}); "
+                f"subject: {evaluation.subject}",
+                ["C-04", "MR-012", "MR-014", "CR-024"],
+            )
+        )
+
     if not profile.cpu_only_guaranteed:
         findings.append(
             _finding(

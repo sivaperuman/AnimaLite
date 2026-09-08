@@ -13,6 +13,7 @@ adapter -- fixture, classical or learned -- goes through exactly one media path.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -21,13 +22,21 @@ from numpy.typing import NDArray
 from animalite.contracts.assets import AnchorSet
 from animalite.contracts.media import OutputSpec
 from animalite.contracts.profile import Capabilities, EngineProfile
+from animalite.contracts.results import DeviceEvidence
 from animalite.contracts.validation import ValidationIssue
 
 __all__ = ["AdapterContext", "MotionAdapter"]
 
 
 class AdapterContext:
-    """Everything an adapter needs that is not part of the request contract."""
+    """Everything an adapter needs that is not part of the request contract.
+
+    ``device_evidence`` and ``notes`` are *outputs*: an adapter that drives a
+    native runtime sets them during :meth:`MotionAdapter.synthesize`, and the
+    execution service copies them into the attempt record. They live on the
+    per-job context rather than on the adapter because the registry holds one
+    adapter instance shared across jobs.
+    """
 
     def __init__(
         self,
@@ -36,6 +45,7 @@ class AdapterContext:
         output: OutputSpec,
         anchors: AnchorSet,
         profile: EngineProfile,
+        scratch_dir: Path,
         controls: Mapping[str, float | int | str | bool] | None = None,
         cancel_requested: object | None = None,
     ) -> None:
@@ -43,6 +53,10 @@ class AdapterContext:
         self.output = output
         self.anchors = anchors
         self.profile = profile
+        #: Attempt-owned scratch directory. An adapter may write here freely;
+        #: the contents are retained as diagnostics when the attempt fails and
+        #: are never published as output.
+        self.scratch_dir = scratch_dir
         #: **Effective** controls: profile defaults with the request's validated
         #: overrides applied. Adapters must read these rather than
         #: ``profile.parameters`` -- otherwise a request control changes the
@@ -50,6 +64,10 @@ class AdapterContext:
         #: digest exists to detect.
         self.controls: dict[str, float | int | str | bool] = dict(controls or {})
         self.cancel_requested = cancel_requested
+        #: Set by adapters that can evidence the device their runtime used.
+        self.device_evidence: DeviceEvidence | None = None
+        #: Free-form observations to attach to the attempt log.
+        self.notes: list[str] = []
 
 
 @runtime_checkable

@@ -26,6 +26,7 @@ from typing import Any
 
 from animalite import __version__
 from animalite.adapters.registry import Registry, default_registry
+from animalite.adapters.rife_runtime import PINNED_MODELS, RIFE_RELEASE, RifeRuntime
 from animalite.bench.evaluate import build_report
 from animalite.bench.ledger import RunLedger
 from animalite.bench.runner import BenchmarkRunner, build_plan, load_dataset, load_host_record
@@ -56,10 +57,25 @@ EXIT_ERROR = 1
 EXIT_INVALID = 2
 EXIT_UNAVAILABLE = 3
 
-NON_QUALIFYING_BANNER = (
-    "NOTE: no learned temporal model is integrated in this package. Output from "
-    "the fixture profile is not evidence for MR-018, AT-055 or AT-056."
-)
+
+def _non_qualifying_banner(profile_id: str, registry: Registry) -> str:
+    """A banner that states the real reason for the profile actually used."""
+    try:
+        profile = registry.profile(profile_id)
+    except AnimaLiteError:
+        return "NOTE: output is not qualification evidence."
+    if not profile.qualification_eligible:
+        return (
+            f"NOTE: {profile.profile_id} is not qualification-eligible "
+            f"({profile.non_qualifying_reason}). Its output is not evidence for "
+            "MR-018, AT-055 or AT-056."
+        )
+    return (
+        f"NOTE: {profile.profile_id} is qualification-eligible, but this single "
+        "render is not qualification evidence. AT-055/AT-056 need the locked "
+        "12-clip sample on the D-02-approved host with two-reviewer quality "
+        "evidence; run `animalite benchmark` for an evaluated verdict."
+    )
 
 
 def _emit(payload: Any, *, as_json: bool) -> None:
@@ -211,8 +227,96 @@ def cmd_render(args: argparse.Namespace) -> int:
             f"memory    : {record.memory.status.value} "
             f"{record.memory.peak_bytes} bytes via {record.memory.method.value}"
         )
-    _note(NON_QUALIFYING_BANNER)
+    _note(_non_qualifying_banner(request.engine_profile_id, _registry()))
     return EXIT_OK if record.state is JobState.SUCCEEDED else EXIT_ERROR
+
+
+def cmd_runtime_status(args: argparse.Namespace) -> int:
+    """Report whether the pinned learned runtime is installed and verified."""
+    runtime = RifeRuntime.discover()
+    model_name = args.model
+    verification = runtime.verify(model_name)
+    payload = {
+        "release": RIFE_RELEASE,
+        "runtime_root": str(runtime.root),
+        "binary_path": str(runtime.binary_path) if runtime.binary_path else None,
+        "models_root": str(runtime.models_root) if runtime.models_root else None,
+        "model": model_name,
+        "binary_present": verification.binary_present,
+        "binary_verified": verification.binary_verified,
+        "model_present": verification.model_present,
+        "model_verified": verification.model_verified,
+        "usable": verification.usable,
+        "problems": verification.problems,
+        "usage_banner": runtime.version_probe() if runtime.binary_path else None,
+        "pinned_models": {
+            name: {
+                "architecture": m.architecture,
+                "supports_arbitrary_timestep": m.supports_arbitrary_timestep,
+                "notes": m.notes,
+            }
+            for name, m in PINNED_MODELS.items()
+        },
+    }
+    if args.json:
+        _emit(payload, as_json=True)
+    else:
+        print(f"runtime root : {payload['runtime_root']}")
+        print(f"binary       : {payload['binary_path'] or 'NOT FOUND'}")
+        print(f"model        : {model_name}")
+        print(
+            f"verified     : binary={verification.binary_verified} "
+            f"weights={verification.model_verified}"
+        )
+        print(f"usable       : {verification.usable}")
+        for problem in verification.problems:
+            print(f"  problem    : {problem}")
+        for name, meta in payload["pinned_models"].items():
+            flag = "arbitrary-timestep" if meta["supports_arbitrary_timestep"] else "MIDPOINT ONLY"
+            print(f"  {name:<12} {meta['architecture']:<38} {flag}")
+    if not verification.usable:
+        _note(
+            "runtime not usable; see `animalite runtime fetch --print-instructions` "
+            "for the pinned install"
+        )
+        return EXIT_UNAVAILABLE
+    return EXIT_OK
+
+
+def cmd_runtime_fetch(args: argparse.Namespace) -> int:
+    """Print the pinned provisioning steps, or perform them on request.
+
+    Weights and compiled tools are deliberately not committed and never
+    downloaded by CI (handoff sections 3 and 8). Downloading is therefore an
+    explicit operator action, and the digest is verified before the runtime is
+    reported usable.
+    """
+    instructions = f"""\
+Pinned runtime: {RIFE_RELEASE["name"]} {RIFE_RELEASE["version"]}
+  source   : {RIFE_RELEASE["source_url"]}
+  archive  : sha256:{RIFE_RELEASE["archive_sha256"]} ({RIFE_RELEASE["archive_bytes"]} bytes)
+  binary   : sha256:{RIFE_RELEASE["binary_sha256"]}
+  licences : {RIFE_RELEASE["code_license"]} (wrapper) / {RIFE_RELEASE["runtime_license"]}
+             RIFE trained models: MIT (see docs/licensing.md; the conversion
+             chain is an open item for the D-06 reviewer)
+
+Install into {RifeRuntime.discover().root / "rife-ncnn-vulkan-20221029"}:
+
+  curl -fsSL -o rife.zip '{RIFE_RELEASE["source_url"]}'
+  echo '{RIFE_RELEASE["archive_sha256"]}  rife.zip' | sha256sum -c -
+  unzip -q rife.zip
+  install -D -m755 rife-ncnn-vulkan-20221029-ubuntu/rife-ncnn-vulkan \\
+      "$TARGET/rife-ncnn-vulkan"
+  cp -r rife-ncnn-vulkan-20221029-ubuntu/rife-v4.6 "$TARGET/"
+
+Then confirm with:  animalite runtime status
+"""
+    print(instructions)
+    _note(
+        "printed instructions only; this command does not download anything. "
+        "Model weights are never fetched by CI."
+    )
+    return EXIT_OK
 
 
 def cmd_fixtures_generate(args: argparse.Namespace) -> int:
@@ -655,6 +759,18 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--width", type=int, default=640)
     generate.add_argument("--height", type=int, default=360)
     generate.set_defaults(func=cmd_fixtures_generate)
+
+    runtime = sub.add_parser("runtime", help="inspect the pinned learned model runtime")
+    runtime_sub = runtime.add_subparsers(dest="runtime_command", required=True)
+    rt_status = runtime_sub.add_parser("status", help="report install and digest verification")
+    rt_status.add_argument("--model", default="rife-v4.6", choices=sorted(PINNED_MODELS))
+    rt_status.add_argument("--json", action="store_true")
+    rt_status.set_defaults(func=cmd_runtime_status)
+    rt_fetch = runtime_sub.add_parser(
+        "fetch", help="print the pinned provisioning steps (downloads nothing)"
+    )
+    rt_fetch.add_argument("--print-instructions", action="store_true", default=True)
+    rt_fetch.set_defaults(func=cmd_runtime_fetch)
 
     benchmark = sub.add_parser("benchmark", help="plan, run and report benchmark measurements")
     benchmark_sub = benchmark.add_subparsers(dest="benchmark_command", required=True)

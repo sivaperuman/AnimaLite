@@ -43,6 +43,40 @@ linking or distributing an FFmpeg build together with AnimaLite requires separat
 legal review, and so does distributing output produced with a `--enable-nonfree`
 build. See `docs/licensing.md`.
 
+## Learned model runtime (invoked, not bundled)
+
+Installed out of band by the operator (`animalite runtime fetch` prints the
+pinned steps); **nothing here is committed to this repository**, and CI never
+downloads it.
+
+| Component | Version | Licence | Role |
+| --- | --- | --- | --- |
+| `rife-ncnn-vulkan` (nihui) | 20221029-ubuntu | MIT | invoked as a separate process with `-g -1` (CPU) |
+| `ncnn` (Tencent) | bundled in the above release | BSD-3-Clause | inference runtime, linked into that executable |
+| RIFE `rife-v4.6` trained weights | 20221029 conversion | MIT (see below) | loaded by the executable |
+
+Pinned digests, verified before every use:
+
+```
+archive  rife-ncnn-vulkan-20221029-ubuntu.zip  sha256:1e2c7ee7fa7daa326542d50622f0afedc80cf6f1858bda411d16385ffa5cdf68
+binary   rife-ncnn-vulkan                      sha256:5c256556195216ddfca103073b0fd37e33e154c8aa40666775fcae8d6a6580b4
+weights  rife-v4.6/flownet.param               sha256:724569596bcd1e7b9fa50455c604777ebed99746d2ef40aa86e31b5725f1053c
+weights  rife-v4.6/flownet.bin                 sha256:f334ed2260149ce0188a6dcf049844e8b0cdd912e01cbcfb63553157d2508958
+```
+
+**Weights are licensed separately from code, and were checked separately.**
+Upstream Practical-RIFE states, of the model download links: *"The content of
+these links is under the same MIT license as this project."* ECCV2022-RIFE is
+MIT and adds *"According to the open source license, we respect the commercial
+behavior of other developers."* This contradicts the common assumption that RIFE
+is non-commercial-research-only.
+
+**Open item.** The weights loaded here are ncnn-format *conversions*
+redistributed in nihui's release, and that repository does not restate weight
+terms. The derivation — repo `LICENSE` (MIT) plus upstream's model statement —
+is recorded in `docs/decisions/DEC-0013-rife-licence-position.md` and is
+`use_eligible: false` pending review. It blocks qualification, not development.
+
 ## Python distributions
 
 Versions are the exact pins in `constraints/dev-linux-cpython311.txt`. The

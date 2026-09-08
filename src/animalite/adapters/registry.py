@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from animalite.adapters.base import MotionAdapter
 from animalite.adapters.fixture import FIXTURE_PROFILE, FixtureAdapter
+from animalite.adapters.rife_ncnn import RIFE_PROFILE, RifeNcnnAdapter
 from animalite.contracts.profile import EngineProfile
 from animalite.errors import ProfileNotFoundError
 
@@ -60,13 +61,17 @@ class Registry:
 
 
 def default_registry() -> Registry:
-    """Registry with only what Package A actually implements.
+    """The adapters and profiles this build implements.
 
-    No learned adapter is registered, because none exists yet. That is why
-    ``animalite render`` requires an explicit ``--profile``: there is no default
-    that could later be mistaken for the learned model.
+    ``animalite render`` requires an explicit ``--profile`` and there is no
+    default, so a fixture render can never be mistaken for the learned model and
+    vice versa. Registering the RIFE profile does not imply its runtime is
+    installed: validation reports an unverified or missing runtime as an
+    actionable error rather than failing at execution time.
     """
     registry = Registry()
     registry.register_adapter(FixtureAdapter())
     registry.register_profile(FIXTURE_PROFILE)
+    registry.register_adapter(RifeNcnnAdapter())
+    registry.register_profile(RIFE_PROFILE)
     return registry

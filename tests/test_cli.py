@@ -65,15 +65,29 @@ def test_render_requires_an_explicit_profile():
         _request(args)
 
 
-def test_profiles_reports_the_fixture_as_non_qualifying(capsys):
+def test_profiles_separates_learned_from_non_learned(capsys):
     assert main(["profiles", "--json"]) == 0
     rows = json.loads(capsys.readouterr().out)
+
     fixture = next(r for r in rows if r["profile_id"] == "fixture-synthetic")
     assert fixture["qualification_eligible"] is False
     assert fixture["learned_temporal_participation"] is False
     assert "MR-018" in fixture["non_qualifying_reason"]
-    # No learned profile is registered yet, so none can claim eligibility.
-    assert not any(r["qualification_eligible"] for r in rows)
+
+    # Package B registers a learned profile. Eligibility and learned
+    # participation must agree, in both directions, for every registered
+    # profile -- the EngineProfile validator enforces this, and this asserts the
+    # registry actually reflects it.
+    for row in rows:
+        if row["qualification_eligible"]:
+            assert row["learned_temporal_participation"], row["profile_id"]
+            assert row["non_qualifying_reason"] is None, row["profile_id"]
+        else:
+            assert row["non_qualifying_reason"], row["profile_id"]
+
+    rife = next(r for r in rows if r["profile_id"] == "rife-ncnn-v4.6-cpu")
+    assert rife["learned_temporal_participation"] is True
+    assert rife["qualification_eligible"] is True
 
 
 def test_capabilities_reports_the_non_qualifying_label(capsys):

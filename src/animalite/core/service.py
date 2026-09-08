@@ -395,18 +395,30 @@ class LocalExecutionService:
             produced = dirs.work / OUTPUT_FILENAME
             encoder_stderr = dirs.work / "encoder.stderr.log"
 
-            with timed(Stage.TEMPORAL_SYNTHESIS):
-                context = AdapterContext(
-                    anchor_frames=anchor_frames,
-                    output=request.output,
-                    anchors=request.anchors,
-                    profile=profile,
-                    controls=profile.effective_controls(request.controls),
-                    cancel_requested=job.cancel_event,
-                )
-                frames = self._counted_frames(job, adapter.synthesize(context), request)
+            context = AdapterContext(
+                anchor_frames=anchor_frames,
+                output=request.output,
+                anchors=request.anchors,
+                profile=profile,
+                scratch_dir=dirs.work,
+                controls=profile.effective_controls(request.controls),
+                cancel_requested=job.cancel_event,
+            )
+            # The adapter is a generator consumed by the encoder writer, so the
+            # two stages interleave. `synthesis_seconds` accumulates the time
+            # actually spent inside the adapter, and it is subtracted from the
+            # encode stage below -- otherwise every second of model inference
+            # would be reported as encoder time (NFR-028: no stage may be
+            # misattributed or hidden).
+            synthesis_seconds = [0.0]
+            frames = self._counted_frames(
+                job, adapter.synthesize(context), request, synthesis_seconds
+            )
 
-            with timed(Stage.ENCODE):
+            job.stage = Stage.ENCODE
+            encode_started = time.perf_counter()
+            logger.emit("stage.start", stage=Stage.ENCODE.value)
+            try:
                 encoded = encode_delivery_stream(
                     self.tools,
                     expand_to_delivery(frames, request.output),
@@ -417,19 +429,52 @@ class LocalExecutionService:
                     stderr_path=encoder_stderr,
                     cancel=job.cancel_event.is_set,
                 )
-            if encoded.survivors:
-                # A leaked encoder is a failed attempt, not a note on a
-                # successful one. It still holds CPU, memory and descriptors, so
-                # continuing to probe and publish would report a clean run that
-                # was not clean.
-                raise CleanupFailed(
-                    f"encoder process group(s) {list(encoded.survivors)} were still "
-                    "alive after teardown; the cleanup guarantee did not hold, so "
-                    "this attempt publishes nothing",
-                    survivors=encoded.survivors,
+                if encoded.survivors:
+                    # A leaked encoder is a failed attempt, not a note on a
+                    # successful one. It still holds CPU, memory and descriptors,
+                    # so continuing to probe and publish would report a clean run
+                    # that was not clean. Raised inside the try so the finally
+                    # below still attributes the synthesis/encode split.
+                    raise CleanupFailed(
+                        f"encoder process group(s) {list(encoded.survivors)} were still "
+                        "alive after teardown; the cleanup guarantee did not hold, so "
+                        "this attempt publishes nothing",
+                        survivors=encoded.survivors,
+                    )
+            finally:
+                pipeline_seconds = time.perf_counter() - encode_started
+                stages.append(
+                    StageTiming(
+                        stage=Stage.TEMPORAL_SYNTHESIS,
+                        wall_seconds=round(synthesis_seconds[0], 6),
+                        inside_timing_boundary=True,
+                        detail="measured inside the adapter generator",
+                    )
+                )
+                stages.append(
+                    StageTiming(
+                        stage=Stage.ENCODE,
+                        wall_seconds=round(max(0.0, pipeline_seconds - synthesis_seconds[0]), 6),
+                        inside_timing_boundary=True,
+                        detail=(
+                            "streaming encode, exclusive of adapter time pulled "
+                            "through the same pipeline"
+                        ),
+                    )
+                )
+                logger.emit(
+                    "stage.end",
+                    stage=Stage.ENCODE.value,
+                    duration_seconds=round(pipeline_seconds, 6),
+                    synthesis_seconds=round(synthesis_seconds[0], 6),
                 )
 
             self._check_cancelled(job)
+
+            if context.device_evidence is not None:
+                device_evidence = context.device_evidence
+            for note in context.notes:
+                logger.emit("adapter.note", note=note)
 
             with timed(Stage.VALIDATE_OUTPUT):
                 probe = probe_output(
@@ -450,10 +495,7 @@ class LocalExecutionService:
                     probe=probe,
                     settings_digest=job.record.settings_digest,
                     is_qualifying_evidence=False,
-                    non_qualifying_reason=(
-                        profile.non_qualifying_reason
-                        or "no learned temporal model is integrated in this package"
-                    ),
+                    non_qualifying_reason=_non_qualifying_reason(profile),
                 )
 
             memory = sampler.observe()
@@ -604,6 +646,7 @@ class LocalExecutionService:
         job: _Job,
         frames: Iterator[NDArray[np.uint8]],
         request: RenderRequest,
+        synthesis_seconds: list[float] | None = None,
     ) -> Iterator[bytes]:
         """Adapt adapter output to encoder input, checking count and geometry.
 
@@ -613,7 +656,15 @@ class LocalExecutionService:
         expected_shape = (request.output.height, request.output.width, 3)
         total = request.output.animation_frame_count
         produced = 0
-        for frame in frames:
+        sink = synthesis_seconds if synthesis_seconds is not None else [0.0]
+        while True:
+            started = time.perf_counter()
+            try:
+                frame = next(frames)
+            except StopIteration:
+                sink[0] += time.perf_counter() - started
+                break
+            sink[0] += time.perf_counter() - started
             self._check_cancelled(job)
             if frame.shape != expected_shape or frame.dtype != np.uint8:
                 raise AdapterError(
@@ -630,6 +681,37 @@ class LocalExecutionService:
             raise AdapterError(
                 f"adapter yielded {produced} animation frames; the output contract requires {total}"
             )
+
+
+def _non_qualifying_reason(profile: EngineProfile) -> str:
+    """Why this artifact is not qualification evidence.
+
+    A single render is never qualification evidence, but the *reason* differs
+    and must be stated accurately. For a non-learned profile the profile itself
+    is disqualifying. For a learned, qualification-eligible profile the profile
+    is fine and the missing pieces are the protocol ones -- saying "no learned
+    model is integrated" there would be false.
+    """
+    if not profile.qualification_eligible:
+        return (
+            profile.non_qualifying_reason
+            or f"profile {profile.profile_id!r} is not qualification-eligible"
+        )
+
+    reasons = [
+        f"profile {profile.profile_id!r} is qualification-eligible, but a single "
+        "render is not qualification evidence: AT-055/AT-056 require the locked "
+        "12-clip sample on the D-02-approved P-L host, complete warm/cold/preview "
+        "distributions and two-reviewer quality evidence, evaluated together by "
+        "`animalite benchmark`"
+    ]
+    evaluation = profile.license_evaluation
+    if evaluation is not None and not evaluation.use_eligible:
+        reasons.append(
+            f"licence evaluation {evaluation.evaluation_id} is "
+            f"{evaluation.policy_state!r} (use_eligible=False)"
+        )
+    return "; ".join(reasons)
 
 
 class _StageTimer:
