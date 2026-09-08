@@ -1,6 +1,8 @@
 # DEC-0001 — Licensing baseline
 
-* **Status:** Proposed. Adoption is an owner decision.
+* **Status:** Proposed. Adoption is an owner decision, and it is the one
+  outstanding item on PR #1 alongside LIC-01 (see DEC-0014, "Owner-only
+  items"). The technical review approved Package A without deciding it.
 * **Deciding role:** implementation (recommendation) → owner (adoption)
 * **Comment URL:** _pending first review_
 * **Affects:** handoff v0.2 §0, C-04, MR-012, MR-014, D-06

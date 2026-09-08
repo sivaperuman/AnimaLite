@@ -13,6 +13,8 @@
   — resolved R5, and returned R3 and R4 as partial with four fail-open paths.
 * **Fifth review:** https://github.com/sivaperuman/AnimaLite/pull/1#issuecomment-5586819453
   — resolved R3; one R4.2 teardown bound remained.
+* **Final review:** https://github.com/sivaperuman/AnimaLite/pull/1#issuecomment-5586990158
+  — **R1–R6 all resolved; Package A's technical implementation approved.**
 * **Reviewed head:** `0e2c1a98dc4c190bc70b8ce9c281f34abd929375`; follow-up
   reviewed `8ba39f5d0a9e1666f6a4f7c7b7f8e002f57b7c50`.
 
@@ -151,6 +153,47 @@ Two further defects surfaced while fixing it, both found by our own tests:
 That second one mattered beyond this bug: without it, `CleanupFailed` would have
 fired on attempts that cleaned up correctly, which is a false failure rather
 than a false pass but is still evidence that does not describe what happened.
+
+## Final disposition
+
+The sixth review closed every finding. R1–R6 are **resolved**, and Package A's
+technical implementation is approved on `93abe076efee43a1461fa01b8b99cf9691cc5d13`.
+
+**What the approval is not.** It covers the Package A foundation only. It is not
+approval of a learned model, of CPU performance, of output quality, of
+commercial or model rights, of host equivalence, or of AT-055/AT-056. The
+fixture cross-fade remains non-learned and non-qualifying, and the evaluator's
+qualification-incomplete gate stays closed.
+
+### Owner-only items, outstanding
+
+Neither is a code-review finding, and neither is Claude's to decide:
+
+1. **LIC-01** — replace `<COPYRIGHT-HOLDER-PENDING>` in `NOTICE` with the legal
+   copyright-holder name. Deliberately not invented.
+2. **DEC-0001** — adopt or reject PolyForm Noncommercial 1.0.0. If adopted, move
+   DEC-0001 from `Proposed` to `Accepted` and record the owner decision. This
+   preserves the intended source-available/noncommercial model and the accurate
+   term **source-available**, which is not OSI open source.
+
+If the owner is not ready to decide, PR #1 stays open. No name is to be guessed,
+and MIT, Apache, GPL, AGPL or a custom "MIT + noncommercial" wording is not to be
+substituted.
+
+### What five rounds of R3/R4 actually taught
+
+Four of the defects across those rounds were regressions from the fixes for the
+round before, and every one had the same shape: **an allowance placed next to a
+bound**. A reap floor so a just-finished child would not be called a timeout; a
+teardown grace counted in two places; a budget restarted per call; a
+post-`SIGKILL` reap allowance. Each was added to make a fix comfortable, and each
+weakened the bound it sat beside.
+
+The last one survived an extra round because its justification sounded right.
+That is the part worth carrying into Packages B and C: a persuasive reason for an
+allowance is not evidence that the allowance is safe. Where a bound exists, it
+decides, and work that cannot finish inside it is *reported* rather than waited
+for.
 
 ## The qualification implementation gate (R1)
 
