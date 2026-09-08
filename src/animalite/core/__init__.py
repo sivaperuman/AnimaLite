@@ -2,6 +2,12 @@
 
 Nothing in this package imports a model runtime. Adapters are reached only
 through :class:`animalite.adapters.registry.Registry`.
+
+Layering: ``contracts`` and the leaf modules (``errors``, ``proc``,
+``resources``) sit below ``media``, which sits below ``core``. ``core`` may
+import ``media`` and ``adapters``; neither may import ``core``. Re-exports of
+:class:`~animalite.proc.ManagedProcess` and
+:class:`~animalite.resources.MemorySampler` are kept here for convenience.
 """
 
 from __future__ import annotations
@@ -9,7 +15,6 @@ from __future__ import annotations
 from animalite.core.attempts import AttemptDirs, AttemptStore, new_attempt_id
 from animalite.core.environment import capture_environment, git_state
 from animalite.core.logging import AttemptLogger, StructuredLogger, utc_now
-from animalite.core.resources import MemorySampler, thread_environment
 from animalite.core.service import OUTPUT_FILENAME, LocalExecutionService
 from animalite.core.validation import validate_request
 from animalite.errors import (
@@ -25,6 +30,7 @@ from animalite.errors import (
     ToolUnavailableError,
     ValidationRejected,
 )
+from animalite.resources import MemorySampler, thread_environment
 
 __all__ = [
     "OUTPUT_FILENAME",

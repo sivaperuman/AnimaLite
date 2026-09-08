@@ -26,6 +26,10 @@
 - Keep domain contracts independent of native model libraries. `animalite.core`
   and `animalite.contracts` must not import a model runtime; adapters are reached
   only through `animalite.adapters.registry.Registry`.
+- Respect the layer direction: `contracts` and the leaf modules (`errors`, `proc`,
+  `resources`) sit below `media`, which sits below `adapters`, which sits below
+  `core`. A lower layer never imports a higher one, and `tests/test_import_layering.py`
+  enforces this by importing each subpackage first in a fresh interpreter.
 - Use typed, versioned schemas; make units, frame indexing and device policy explicit.
   Every contract sets `extra="forbid"`: an unknown field is an error, not a
   dropped value.

@@ -1,5 +1,8 @@
 """Thread budgeting and process-group peak-memory sampling.
 
+Leaf module (see :mod:`animalite.proc` for why): it imports only from
+:mod:`animalite.contracts`.
+
 Handoff rule 6: "Record the combined app/worker/encoder memory method;
 measuring only the Python parent is insufficient."
 

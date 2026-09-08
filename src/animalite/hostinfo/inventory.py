@@ -17,8 +17,8 @@ from pathlib import Path
 from animalite.contracts.enums import EvidenceStatus, MemoryMethod
 from animalite.contracts.host import HostApproval, HostInventory, ToolIdentity
 from animalite.core.logging import utc_now
-from animalite.core.resources import THREAD_ENV_VARS, MemorySampler
 from animalite.media.ffmpeg import FFmpegTools
+from animalite.resources import THREAD_ENV_VARS, MemorySampler
 
 __all__ = ["collect_inventory"]
 

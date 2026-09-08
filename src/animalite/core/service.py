@@ -51,7 +51,6 @@ from animalite.contracts.validation import ValidationReport
 from animalite.core.attempts import AttemptDirs, AttemptStore, new_attempt_id
 from animalite.core.environment import capture_environment
 from animalite.core.logging import AttemptLogger, StructuredLogger, utc_now
-from animalite.core.resources import MemorySampler
 from animalite.core.validation import validate_request
 from animalite.errors import (
     AdapterError,
@@ -64,6 +63,7 @@ from animalite.media.decode import decode_image_rgb24
 from animalite.media.encode import encode_delivery_stream
 from animalite.media.ffmpeg import FFmpegTools
 from animalite.media.probe import probe_output, validate_output
+from animalite.resources import MemorySampler
 
 __all__ = ["OUTPUT_FILENAME", "LocalExecutionService"]
 

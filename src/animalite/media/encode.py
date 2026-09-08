@@ -19,10 +19,10 @@ from pathlib import Path
 
 from animalite.contracts.media import OutputSpec
 from animalite.contracts.profile import ThreadBudget
-from animalite.core.process import ManagedProcess
-from animalite.core.resources import apply_thread_environment
 from animalite.errors import EncoderError, JobTimeoutError
 from animalite.media.ffmpeg import FFmpegTools
+from animalite.proc import ManagedProcess
+from animalite.resources import apply_thread_environment
 
 __all__ = ["encode_delivery_stream", "encoder_argv"]
 

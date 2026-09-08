@@ -17,10 +17,10 @@ from animalite.adapters.fixture import FIXTURE_PROFILE, FixtureAdapter
 from animalite.adapters.registry import Registry
 from animalite.contracts.enums import FailureCategory, JobState
 from animalite.core.attempts import AttemptStore
-from animalite.core.process import ManagedProcess, process_alive
 from animalite.core.service import OUTPUT_FILENAME, LocalExecutionService
 from animalite.errors import AttemptConflictError
 from animalite.media.ffmpeg import FFmpegTools
+from animalite.proc import ManagedProcess, process_alive
 from tests.conftest import make_request, require_media
 
 pytestmark = pytest.mark.media

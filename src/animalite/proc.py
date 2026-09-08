@@ -1,5 +1,12 @@
 """Child-process lifetime management with process-group cleanup.
 
+Leaf module: it imports nothing from :mod:`animalite.core`, :mod:`animalite.media`
+or :mod:`animalite.adapters`. It lives at the top level rather than under
+``core`` so :mod:`animalite.media` can manage child processes without importing
+the domain layer -- importing ``animalite.core.process`` executes
+``animalite/core/__init__.py``, which imports the service, which imports media,
+which is a cycle.
+
 Handoff rule 4: "Timeout, cancellation and crashes must clean up the
 worker/encoder process tree, release resources and retain diagnostics."
 

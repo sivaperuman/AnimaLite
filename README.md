@@ -107,7 +107,10 @@ Media tests report *pending* rather than passing when FFmpeg is unavailable.
 
 ```
 src/animalite/contracts/   typed, versioned job/profile/asset/result contracts
-src/animalite/core/        validation, execution service, attempt store, resources
+src/animalite/errors.py    exception hierarchy and stable validation codes (leaf)
+src/animalite/proc.py      child-process group management (leaf)
+src/animalite/resources.py thread budget and peak-memory sampling (leaf)
+src/animalite/core/        validation, execution service, attempt store
 src/animalite/adapters/    motion adapter protocol + fixture (non-learned) adapter
 src/animalite/media/       ffmpeg discovery, cadence, streaming encode, probe validation
 src/animalite/bench/       benchmark runner, ledger, statistics, eligibility evaluator

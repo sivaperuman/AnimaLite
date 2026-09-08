@@ -11,8 +11,8 @@ from animalite import SCHEMA_VERSION, __version__
 from animalite.contracts.base import sha256_file
 from animalite.contracts.job import EnvironmentRecord
 from animalite.contracts.profile import ThreadBudget
-from animalite.core.resources import thread_environment
 from animalite.media.ffmpeg import FFmpegTools
+from animalite.resources import thread_environment
 
 __all__ = ["capture_environment", "git_state", "repo_root"]
 
