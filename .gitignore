@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# AnimaLite runtime and evidence output (never committed as source)
+workspace/
+attempts/
+out/
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.exr
+*.wav
+
+# Model weights, native tool builds and caches
+weights/
+models/
+*.bin
+*.onnx
+*.param
+*.pt
+*.pth
+*.safetensors
+.cache/
+
+# Benchmark outputs and local evidence bundles
+benchmarks/results/
+benchmarks/runs/
+evidence/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local environment overrides
+.env

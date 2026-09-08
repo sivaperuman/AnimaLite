@@ -1,0 +1,98 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "animalite"
+version = "0.1.0"
+description = "CPU-first frame-conditioned 2D quick-clip execution foundation and benchmark harness"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { file = "LICENSE" }
+authors = [{ name = "AnimaLite project owner" }]
+keywords = ["animation", "cpu", "video", "benchmark", "frame-conditioned"]
+classifiers = [
+  # PolyForm Noncommercial 1.0.0 has no PyPI trove classifier; see LICENSE and
+  # docs/licensing.md. "License :: Other/Proprietary License" is the closest
+  # accurate classifier and does NOT mean the project is OSI open source.
+  "License :: Other/Proprietary License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Intended Audience :: Developers",
+  "Topic :: Multimedia :: Video",
+  "Private :: Do Not Upload",
+]
+dependencies = [
+  "pydantic>=2.9,<3",
+  "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "ruff>=0.6,<1",
+  "mypy>=1.11,<2",
+]
+
+[project.urls]
+Homepage = "https://github.com/sivaperuman/AnimaLite"
+Source = "https://github.com/sivaperuman/AnimaLite"
+
+[project.scripts]
+animalite = "animalite.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/animalite"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/benchmarks",
+  "/docs",
+  "/README.md",
+  "/LICENSE",
+  "/NOTICE",
+  "/THIRD_PARTY_NOTICES.md",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF", "S"]
+ignore = [
+  "S101",   # assert is the pytest idiom and is used in tests only
+  "SIM108", # ternaries are not always clearer here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S603", "S607"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/animalite", "tests"]
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# The source tree is checked in strict mode. Test bodies use pytest fixtures and
+# small local helpers where full annotation adds noise without catching bugs.
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+disallow_incomplete_defs = false
+disallow_any_generics = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+  "media: requires an installed FFmpeg/FFprobe executable (reports pending when absent)",
+  "slow: end-to-end fixture render; excluded from the quick check",
+]

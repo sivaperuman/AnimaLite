@@ -1,0 +1,113 @@
+name: checks
+
+# One small default workflow: install/lock verification, formatting, lint, type
+# check and focused tests. Handoff v0.2 section 8:
+#   - no duplicate runs on both push and pull_request for the same commit;
+#   - read-only permissions, no secrets, no pull_request_target;
+#   - superseded PR runs are cancelled;
+#   - model downloads and the CPU qualification matrix stay out of hosted CI;
+#   - finite job timeouts and pinned actions.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  checks:
+    name: lint, types and focused tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # actions/checkout v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      # actions/setup-python v5.3.0
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
+        id: setup-python
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints/dev-linux-cpython311.txt
+
+      - name: Detect documentation-only changes
+        id: scope
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha || github.sha }}"
+          if [ -z "$base" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$base" || true
+          changed="$(git diff --name-only "$base" "$head" || echo unknown)"
+          echo "changed files:"; echo "$changed"
+          if echo "$changed" | grep -qvE '^(docs/|.*\.md$|LICENSE$|NOTICE$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The workflow itself always runs so the required check never hangs
+      # pending; only the heavier steps are skipped for documentation-only PRs.
+      - name: Install (verifies the pinned environment resolves)
+        run: |
+          python -m pip install -e ".[dev]" -c constraints/dev-linux-cpython311.txt
+          python -c "import animalite; print('animalite', animalite.__version__)"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Format check
+        run: ruff format --check .
+
+      - name: Type check
+        if: steps.scope.outputs.code == 'true'
+        run: mypy
+
+      - name: Install FFmpeg (tiny media integration checks only)
+        if: steps.scope.outputs.code == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -hide_banner -version | head -2
+
+      - name: Tests
+        if: steps.scope.outputs.code == 'true'
+        # Development-size fixtures only. No model weights are downloaded and no
+        # qualification benchmark is executed here; a hosted runner's timing is
+        # never a P-L result.
+        run: pytest -q
+
+      - name: CLI smoke check
+        if: steps.scope.outputs.code == 'true'
+        run: |
+          animalite --help
+          python -m animalite doctor --json > doctor.json
+          python - <<'PY'
+          import json
+          inventory = json.load(open("doctor.json"))
+          assert inventory["approval"]["approved"] is False, "CI must never claim host approval"
+          print("host inventory recorded; approval:", inventory["approval"]["approved"])
+          PY
+
+      - name: Documentation-only change
+        if: steps.scope.outputs.code != 'true'
+        run: |
+          echo "Documentation-only change."
+          echo "Install, lint and format ran; type check, tests and media steps skipped."
