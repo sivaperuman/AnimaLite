@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import Field, model_validator
 
+from animalite.contracts.admission import AdmissionPurpose
 from animalite.contracts.assets import AnchorSet
 from animalite.contracts.base import Contract, Document, content_digest
 from animalite.contracts.enums import FailureCategory, JobState
@@ -53,6 +54,16 @@ class RenderRequest(Document):
     )
     parent_attempt_id: str | None = None
     label: str | None = None
+    execution_purpose: AdmissionPurpose = Field(
+        default=AdmissionPurpose.RESEARCH,
+        description=(
+            "What this run is for. Admission for a learned profile is granted "
+            "per purpose, so the run has to declare one: a record clearing "
+            "local research does not clear benchmark evidence or delivered "
+            "output. It does not affect the pixels and is excluded from the "
+            "settings digest."
+        ),
+    )
 
     def settings_digest(self) -> str:
         """Digest over the output-affecting subset of the request.

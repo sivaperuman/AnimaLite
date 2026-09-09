@@ -71,16 +71,25 @@ Distributing output produced with a `--enable-nonfree` build carries its own
 restrictions. No such build is required or used here. See
 <https://ffmpeg.org/legal.html>.
 
-## 3. Model code, weights and assets — not yet applicable
+## 3. Model code, weights and assets
 
-Package A integrates no learned model, so no model licence has been evaluated.
-The requirements treat this as a gate, not a formality: C-04 forbids a profile
-entering production without a recorded licence review and approved use case, and
-MR-012 requires weights, code, dependencies and derived-model obligations to be
-reviewable *before use*.
+Package B integrates a candidate, so this section is now live. The requirements
+treat it as a gate, not a formality: C-04 forbids a profile entering production
+without a recorded licence review and approved use case, and MR-012 requires
+weights, code, dependencies and derived-model obligations to be reviewable
+*before use*.
 
-When Package B integrates a candidate (a pinned RIFE/ncnn CPU model is named
-first in requirements section 9.1), record **separately**:
+**Current state.** The evaluation for `rife-ncnn-v4.6-cpu` is gathered in one
+artifact-specific dossier,
+[`docs/licensing/admissions/rife-ncnn-20221029.json`](licensing/admissions/rife-ncnn-20221029.json),
+with the reasoning in [DEC-0013](decisions/DEC-0013-rife-licence-position.md).
+It records `decision: pending`, and that is **enforced**: the learned path does
+not execute without an approved decision covering those exact digests and the
+run's purpose ([DEC-0016](decisions/DEC-0016-execution-admission.md)). "Before
+use" is a check the code performs, not an instruction the code trusts someone to
+follow.
+
+For each candidate, record **separately**:
 
 1. the upstream **source code** licence;
 2. the **weights / checkpoint** licence, with any territorial or field-of-use
@@ -134,7 +143,7 @@ Two constraints the owner should be aware of before any such arrangement:
 | LIC-02 | Whether a commercial-permission route is offered at all, and on what terms | **Open** | Project owner + legal |
 | LIC-03 | Contributor licence agreement, if inbound contributions are to be relicensable | **Open** | Project owner + legal |
 | LIC-04 | D-06 licence policy: permissive-only production, or custom community licences allowed | **Open** (requirements D-06, due before model shortlist lock) | Project owner / legal |
-| LIC-05 | Model code + weight licence evaluation for the Package B candidate | **Not started** — no model integrated | Technical lead + legal |
+| LIC-05 | Model code + weight licence evaluation for the Package B candidate | **Open, and now enforced.** Evidence gathered and consolidated into one artifact-specific dossier: [`docs/licensing/admissions/rife-ncnn-20221029.json`](licensing/admissions/rife-ncnn-20221029.json), carrying `decision: pending`. Until a reviewer records an approval, the learned path does not execute at all (DEC-0016) — this is no longer a note on a run that happened anyway. | Technical lead + legal (D-06) |
 | LIC-06 | FFmpeg distribution position if AnimaLite is ever packaged with a build | **Open** — not required at this stage | Technical lead + legal |
 | LIC-07 | Rights records for the frozen 12-clip qualification sample artwork | **Not started** — sample not yet frozen | Project owner + creative lead |
 

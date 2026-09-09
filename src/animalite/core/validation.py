@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from animalite.adapters.registry import Registry
+from animalite.admission import evaluate_admission
 from animalite.contracts.base import sha256_file
 from animalite.contracts.enums import CadenceConversion, IssueSeverity
 from animalite.contracts.job import RenderRequest
@@ -216,6 +217,39 @@ def _validate_profile_fit(request: RenderRequest, profile: EngineProfile) -> lis
     return issues
 
 
+def _validate_admission(request: RenderRequest, profile: EngineProfile) -> list[ValidationIssue]:
+    """Refuse a learned profile that has no approved admission record.
+
+    An error, not a warning. The previous warning said development and
+    benchmarking "may proceed", which meant a pending rights position blocked
+    nothing that actually ran: the profile verified its digests and executed.
+    Verification and admission are separate questions and this is the second
+    one (CR-024, C-04, DEC-0013).
+    """
+    outcome = evaluate_admission(profile, request.execution_purpose)
+    if outcome.admitted:
+        return []
+    code = {
+        "missing": CodeVAL.ADMISSION_NOT_RECORDED,
+        "artifacts_not_covered": CodeVAL.ADMISSION_SCOPE,
+        "purpose_not_permitted": CodeVAL.ADMISSION_SCOPE,
+    }.get(outcome.state, CodeVAL.ADMISSION_NOT_APPROVED)
+    return [
+        _error(
+            code,
+            "engine_profile_id",
+            f"execution of learned profile {profile.profile_id!r} for purpose "
+            f"{request.execution_purpose.value!r} is not admitted "
+            f"({outcome.summary})",
+            "Record the reviewed licence disposition for these exact artifacts "
+            "and this purpose in the admission directory (see "
+            "docs/licensing/admissions/README.md and DEC-0013). There is no "
+            "development bypass: a pending decision blocks execution, not only "
+            "qualification.",
+        )
+    ]
+
+
 def _validate_media(request: RenderRequest) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     output = request.output
@@ -279,6 +313,7 @@ def validate_request(
     issues.extend(_validate_anchors(request, profile))
     issues.extend(_validate_profile_fit(request, profile))
     issues.extend(_validate_media(request))
+    issues.extend(_validate_admission(request, profile))
     # Validate the *effective* configuration -- profile defaults with the
     # request's overrides applied -- because that is what synthesis will read.
     # Validating `request.controls` alone let an invalid profile default reach

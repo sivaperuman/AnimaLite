@@ -819,3 +819,43 @@ def test_four_copies_of_one_fresh_pack_do_not_satisfy_at056():
     assert "AT056-FRESH-PACKS" in codes(findings)
     issue = next(f for f in findings if f.code == "AT056-FRESH-PACKS")
     assert "distinct" in issue.message
+
+
+# --- Package B: licence admission --------------------------------------------
+
+
+def test_an_uncleared_licence_blocks_qualification():
+    """C-04 / CR-024: pending licence evidence cannot yield a qualifying pass."""
+    profile = learned_profile().model_copy(
+        update={
+            "license_evaluation": LicenseEvaluationRef(
+                evaluation_id="license-eval:rife-ncnn-20221029",
+                subject="RIFE weights, conversion chain unresolved",
+                policy_state="pending",
+                use_eligible=False,
+                eligibility_block_kind="resolvable",
+            )
+        }
+    )
+    verdict, findings = evaluate(profile=profile)
+    assert verdict is QualificationVerdict.NOT_ELIGIBLE
+    assert "ELIG-LICENCE-NOT-CLEARED" in codes(findings)
+
+
+def test_a_profile_with_no_licence_evaluation_blocks_qualification():
+    profile = learned_profile().model_copy(update={"license_evaluation": None})
+    verdict, findings = evaluate(profile=profile)
+    assert verdict is QualificationVerdict.NOT_ELIGIBLE
+    assert "ELIG-LICENCE-MISSING" in codes(findings)
+
+
+def test_the_real_rife_profile_cannot_qualify_while_its_licence_is_pending():
+    """The shipped profile itself, not a test double."""
+    from animalite.adapters.rife_ncnn import RIFE_PROFILE
+
+    verdict, findings = evaluate(profile=RIFE_PROFILE)
+    assert verdict is QualificationVerdict.NOT_ELIGIBLE
+    assert "ELIG-LICENCE-NOT-CLEARED" in codes(findings)
+    # ...but it is not blocked for lacking a learned component.
+    assert "ELIG-PROFILE-NOT-LEARNED" not in codes(findings)
+    assert "ELIG-NO-LEARNED-TEMPORAL" not in codes(findings)

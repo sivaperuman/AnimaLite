@@ -784,3 +784,60 @@ def test_a_zombie_is_not_reported_as_a_leaked_process_group(tmp_path):
     finally:
         proc.close()
     assert not proc.survivors, "a zombie must not be recorded as a leaked group"
+
+
+# --- B-R6: timing and evidence on the failure path ---------------------------
+
+
+class SlowThenFailingAdapter(FixtureAdapter):
+    """Spends real time in one frame and then raises, like a failed inference."""
+
+    key = "slow-then-failing"
+
+    def synthesize(self, context):
+        for index, frame in enumerate(super().synthesize(context)):
+            if index == 3:
+                time.sleep(0.3)
+                raise RuntimeError("simulated inference failure after 0.3s of work")
+            yield frame
+
+
+def test_time_spent_in_a_failing_generator_call_is_charged_to_synthesis(tmp_path, fixture_anchors):
+    """The elapsed time was added *after* a successful next(), so a failing call
+    cost nothing. Measured before the fix: a call that spent 0.3 s and then
+    raised produced ``temporal_synthesis=0.000597s`` and charged the 0.3 s to
+    encode instead.
+    """
+    service = _service_with(SlowThenFailingAdapter(), tmp_path, "slow-failing-profile")
+    record = service.render_blocking(
+        make_request(fixture_anchors, profile_id="slow-failing-profile")
+    )
+    assert record.state is JobState.FAILED
+
+    stages = {s.stage.value: s.wall_seconds for s in record.stages}
+    assert stages["temporal_synthesis"] >= 0.3, (
+        f"the failed call's 0.3s was not charged to synthesis: {stages}"
+    )
+
+
+def test_a_learned_profile_never_inherits_the_no_inference_runtime_note():
+    """B-R6. A failed learned attempt asserted "Package A runs no inference
+    runtime" and ``inference_device_status=not_applicable`` -- about a run that
+    had launched a model. Absent evidence is pending, not not-applicable.
+    """
+    from animalite.adapters.rife_ncnn import RIFE_PROFILE
+    from animalite.contracts.enums import EvidenceStatus
+    from animalite.core.service import _device_evidence_before_adapter
+
+    learned = _device_evidence_before_adapter(RIFE_PROFILE)
+    assert learned.inference_device_status is EvidenceStatus.PENDING
+    assert not any("no inference runtime" in note for note in learned.notes)
+    assert any("recorded no device observation" in note for note in learned.notes)
+
+    fixture = _device_evidence_before_adapter(FIXTURE_PROFILE)
+    assert fixture.inference_device_status is EvidenceStatus.NOT_APPLICABLE
+    assert any("executes no inference runtime" in note for note in fixture.notes)
+
+    unreached = _device_evidence_before_adapter(None)
+    assert unreached.inference_device_status is EvidenceStatus.PENDING
+    assert any("did not reach an adapter" in note for note in unreached.notes)

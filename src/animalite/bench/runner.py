@@ -33,6 +33,7 @@ from pathlib import Path
 
 from animalite.adapters.registry import Registry, default_registry
 from animalite.bench.ledger import RunLedger
+from animalite.contracts.admission import AdmissionPurpose
 from animalite.contracts.assets import AnchorSet
 from animalite.contracts.base import content_digest
 from animalite.contracts.benchmark import (
@@ -252,6 +253,10 @@ class BenchmarkRunner:
             output=output,
             timeout_seconds=self.timeout_seconds,
             label=f"{planned.kind.value}#{planned.repetition}",
+            # Benchmark evidence is a different permission from local research
+            # (CR-024): an admission record clearing one does not clear the
+            # other, and the run declares which it is.
+            execution_purpose=AdmissionPurpose.BENCHMARK,
         )
 
         if planned.kind is RunKind.COLD_FINAL:
