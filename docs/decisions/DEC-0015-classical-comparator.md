@@ -14,14 +14,21 @@ warping**, written in NumPy in `animalite.media.flow` and exposed as the
 
 ## Why a comparator exists at all
 
-A test the learned candidate passes is evidence of learned temporal capability
-only if a non-learned method *fails* it. The PR-1 review made this point about
-the disc test directly: a classical motion algorithm could also pass it, so
-passing alone certifies nothing.
+**Corrected after PR-2 review (B-R7).** An earlier version of this record said a
+test is evidence of learned capability "only if a non-learned method *fails*
+it". That rule is wrong, and it points at a bad incentive: it would make
+weakening the comparator a way to manufacture evidence.
 
-The comparator turns "would a baseline have done this too?" from an assumption
-into a measurement. Its job is to be beaten, and to make it visible when it is
-not.
+The accurate statement: when a classical method passes the same example, that
+does not negate verified learned participation. It means *that example* cannot
+identify the mechanism or establish a learned advantage — the observation is
+consistent with both, so it discriminates between neither.
+
+The comparator therefore exists to turn "would a baseline have done this too?"
+from an assumption into a measurement, on the same inputs and within the same
+resource envelope. It is meant to be a **credible reference**, and the useful
+outcome is a fair comparison, not a win. A comparator built to lose would tell
+us nothing at all.
 
 ## Why not `minterpolate`
 
@@ -91,19 +98,36 @@ than an absolute number.
   validates from a dumped dict rather than `model_copy`, because `model_copy`
   does not re-run validators and a test built on it would pass with no guard
   present.
-* **Motion beyond the search radius is not found.** The estimator reports the
-  zero displacement rather than the best wrong answer at the edge of its window.
+* **Motion beyond the search radius is reported wrongly, not as zero.** An
+  earlier version of this record claimed the zero incumbent made out-of-range
+  motion report no motion. It does not, and PR-2 review demonstrated it: on a
+  deterministic 64×96 random texture translated 24 px and searched at radius 4,
+  **95 of 96 blocks returned nonzero flow**. Reproduced here exactly. The zero
+  incumbent only helps where there is nothing to match — a flat or near-flat
+  region — because on texture some within-window candidate almost always beats
+  standing still, and it is accepted.
+
+  What the estimator does guarantee is the *bound*: no reported displacement
+  exceeds the search radius. That is a much weaker property than detection, and
+  the two are now asserted by separate tests so they cannot be conflated again.
+  More generally, block matching is a local minimisation with no notion of
+  correctness: repeating texture and occlusion produce confident wrong answers
+  too, and nothing in the output distinguishes them from good matches.
 * **Block size need not divide the output, and 16 does not divide 360.** The
   estimator covers whole blocks; the remainder strip at the bottom or right edge
   inherits the nearest block's flow through the upsampler's clamp. An earlier
   version required exact division and rejected the P-L output spec outright —
   caught by an end-to-end render, not by a unit test, because the unit tests all
   used geometry that happened to divide.
-* **It is slow, and that is not being fixed.** Measured on the two-anchor
-  fixture: 9.02 s against the fixture adapter's 0.63 s. Full search is quadratic
-  in the radius. The comparator is a quality reference, not a latency candidate;
-  §12.0 latency targets apply to the qualifying profile, and optimising the
-  baseline would only make the control harder to reason about.
+* **It is slow.** Measured on the two-anchor fixture: 9.02 s against the fixture
+  adapter's 0.63 s (single runs, development container, exploratory). Full
+  search is quadratic in the radius. §12.0 latency targets apply to the
+  qualifying profile, so this does not disqualify the comparator as a quality
+  reference — but "assess it fairly on the same inputs and resource envelope"
+  (PR-2 review) means its cost is reported alongside the learned candidate's
+  rather than excused. It is bounded like everything else: the search now calls
+  a cooperative checkpoint once per displacement row, so cancellation and the
+  job deadline interrupt it part-way instead of waiting out the whole search.
 
 ## Consequences
 

@@ -14,6 +14,7 @@ from animalite.contracts.enums import FailureCategory
 
 __all__ = [
     "AdapterError",
+    "AdmissionDenied",
     "AnimaLiteError",
     "AttemptConflictError",
     "CleanupFailed",
@@ -62,6 +63,9 @@ class CodeVAL:
     RUNTIME_MODEL_UNKNOWN = "VAL-RUNTIME-MODEL-UNKNOWN"
     RUNTIME_TIMESTEP_UNSUPPORTED = "VAL-RUNTIME-TIMESTEP-UNSUPPORTED"
     LICENCE_NOT_CLEARED = "VAL-LICENCE-NOT-CLEARED"
+    ADMISSION_NOT_RECORDED = "VAL-ADMISSION-NOT-RECORDED"
+    ADMISSION_NOT_APPROVED = "VAL-ADMISSION-NOT-APPROVED"
+    ADMISSION_SCOPE = "VAL-ADMISSION-SCOPE"
 
 
 class AnimaLiteError(Exception):
@@ -96,6 +100,17 @@ class ProfileNotFoundError(AnimaLiteError):
 
 class AdapterError(AnimaLiteError):
     category = FailureCategory.ADAPTER_ERROR
+
+
+class AdmissionDenied(AnimaLiteError):
+    """Execution of a learned profile was attempted without recorded admission.
+
+    Not a :class:`ValidationRejected`: the request is well formed and the
+    artifacts may verify perfectly. What is missing is the recorded decision
+    that they may be executed at all, for this purpose (CR-024, C-04).
+    """
+
+    category = FailureCategory.ADMISSION_DENIED
 
 
 class CleanupFailed(AnimaLiteError):

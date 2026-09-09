@@ -432,7 +432,8 @@ are **exploratory**; none is a P-L result.
 ### Runtime provisioning and verification
 
 ```bash
-animalite runtime fetch     # prints the pinned URL and digests; downloads nothing
+animalite runtime fetch       # prints the pinned URL and digests; downloads nothing
+animalite runtime fetch --install   # bounded, verified, atomic (not run in CI)
 animalite runtime status
 ```
 
@@ -440,17 +441,108 @@ animalite runtime status
 runtime root : /root/.local/share/animalite/runtimes
 binary       : .../rife-ncnn-vulkan-20221029/rife-ncnn-vulkan
 model        : rife-v4.6
-verified     : binary=True weights=True
-usable       : True
-  rife-v4.6    v4 (flownet only)                        arbitrary-timestep
+installed    : True
+verified     : True (binary=True weights=True)
+compatible   : True
+admitted     : False (missing)
+usable       : False
+  admission  : no execution admission record for profile 'rife-ncnn-v4.6-cpu' in
+               /root/.local/share/animalite/admissions
+  admission  : absence is not permission: record the reviewed disposition before
+               executing the pinned artifacts (CR-024, DEC-0013)
+  rife-v4.6    v4 (flownet only)                      arbitrary-timestep
   rife-anime   v2-era (flownet + contextnet + fusionnet) MIDPOINT ONLY
 ```
 
-With the runtime absent, `animalite validate --profile rife-ncnn-v4.6-cpu` exits
-**2** with `VAL-RUNTIME-UNVERIFIED` and an actionable remediation, and the
-runtime-dependent tests report `PENDING (not run)` rather than passing.
+Four states, reported separately (DEC-0017). `usable` is their conjunction, and
+this host is a case where three hold and the fourth does not.
 
-### End-to-end learned render
+`status` executes nothing. `--probe` is refused twice over here — once if the
+digests do not verify, and again because running the binary for a usage banner
+is still an execution of the artifact:
+
+```
+$ animalite runtime status --probe --json | jq -r .probe_note
+refused to probe: running the executable is an execution of the artifact, and
+admission is 'missing'. Compatibility is reported above from the file's headers,
+without executing it.
+```
+
+With the runtime absent, `animalite validate --profile rife-ncnn-v4.6-cpu` exits
+**2** with `VAL-RUNTIME-UNVERIFIED`, and the runtime-dependent tests report
+`PENDING (not run)`. Those tests additionally require `ANIMALITE_RUN_MODEL_TESTS=1`:
+an installed runtime is not consent to execute a model.
+
+### Execution admission blocks the learned path (DEC-0016)
+
+On this host the runtime is installed, verified and compatible — and the learned
+render still does not run, because no admission record exists:
+
+```bash
+animalite validate --profile rife-ncnn-v4.6-cpu \
+  --anchors work/b2/fx/fixture-two-anchor/anchors.json
+```
+
+```
+invalid: [VAL-ADMISSION-NOT-RECORDED] execution of learned profile
+'rife-ncnn-v4.6-cpu' for purpose 'research' is not admitted (missing: no execution
+admission record ...; absence is not permission ...)
+  -> Record the reviewed licence disposition for these exact artifacts and this
+     purpose in the admission directory ... There is no development bypass: a
+     pending decision blocks execution, not only qualification.
+  [warning] VAL-LICENCE-NOT-CLEARED ... 'pending' with use_eligible=False
+```
+
+```bash
+animalite render --profile rife-ncnn-v4.6-cpu \
+  --anchors work/b2/fx/fixture-two-anchor/anchors.json --workspace work/b2/ws
+```
+
+```
+state     : failed          (exit 1, wall 0.020 s)
+failure   : [validation_rejected] ... VAL-ADMISSION-NOT-RECORDED ...
+```
+
+Nothing was launched: no anchor PNG was written and the runtime was not invoked.
+That is the intended state of a fresh checkout.
+
+### The classical comparator, which needs no admission
+
+```bash
+animalite render --profile classical-warp-baseline \
+  --anchors work/b2/fx/fixture-two-anchor/anchors.json --workspace work/b2/ws2
+```
+
+```
+state     : succeeded
+wall (s)  : 10.218
+decoded   : 640x360 h264/High yuv420p 144 frames @ 24/1 = 6.0s
+frames    : source=2 synthesized=70 duplicated=72 (animation=72, delivery=144)
+qualifying: False
+            classical comparator: ... no learned component of any kind ...
+```
+
+Exploratory, single run, this container. The comparator executes no third-party
+model artifact, so `evaluate_admission` returns `not_required` for it.
+
+### End-to-end learned render — recorded before admission was enforced
+
+**Everything in this subsection was produced by the pre-B-R1 build**, on the same
+container, when a pending licence position only warned. It is retained because
+deleting a measurement because the code changed would be worse than labelling
+it, and because it is the evidence that the learned path works. It **cannot be
+reproduced from this checkout** without a recorded admission decision, and none
+has been invented to reproduce it.
+
+Two specific figures below no longer describe current behaviour:
+
+* `inference_device_status: measured` was returned here because this host cannot
+  create a Vulkan instance, which remains positive evidence. On a host without
+  that failure the same run now reports **pending** — the configuration is
+  observed, the device is not (B-R6).
+* the stage table's `temporal_synthesis` figure predates the fix that charges a
+  *failing* generator call to synthesis; it is unaffected for this successful
+  run, but a failed run's numbers from that build were not.
 
 ```bash
 animalite render --profile rife-ncnn-v4.6-cpu \
@@ -493,7 +585,9 @@ inference_device_status: measured   inference_device: cpu
 
 The upstream binary links `libvulkan` and attempts instance creation at startup
 regardless of `-g`; on this host that fails (`vkCreateInstance failed -9`), which
-is stronger evidence than the flag we pass ourselves.
+is stronger evidence than the flag we pass ourselves. The claim now belongs to
+the invocations that actually printed it — the adapter records which animation
+frames those were — rather than to the attempt as a whole.
 
 ### Learned synthesis versus a cross-fade
 
@@ -512,7 +606,17 @@ leaves two half-opacity ghosts, so it retains roughly half the solid-subject
 pixels. Asserted in `tests/test_rife_adapter.py`, which the fixture adapter
 would fail.
 
-### Benchmark with the learned profile
+What this shows is that the output is not a blend. It does **not** on its own
+identify the mechanism or establish an advantage over a non-learned method —
+`classical-warp-baseline` exists to answer that question on the same clips, and
+that comparison has not been run as a measured sample yet.
+
+### Benchmark with the learned profile — also pre-admission
+
+Same caveat as the render above: recorded on the pre-B-R1 build. A benchmark run
+now declares `execution_purpose=benchmark`, which is a *separate* permission from
+research (DEC-0016), so an admission record clearing local development would not
+by itself let this run.
 
 ```
 verdict : not_eligible
@@ -531,8 +635,10 @@ absence of a learned component. `ELIG-PROFILE-NOT-LEARNED` and
 ## Commands that do **not** exist
 
 No command in this repository runs the §12.0 qualification matrix or produces
-qualification evidence, and none downloads model weights: `animalite runtime
-fetch` prints instructions and digests but performs no download, and CI never
-installs the runtime. A learned model does now execute (§12 above), which is an
-engineering result and not a qualification. Remaining prerequisites are listed in
+qualification evidence. `animalite runtime fetch --install` now performs a real,
+bounded, digest-verified install (DEC-0017), but nothing calls it implicitly:
+not render, not validation, not the test suite, and never CI. A learned model
+executed on this container before admission was enforced (§12 above), which is
+an engineering result and not a qualification; on this checkout it does not
+execute at all until an admission decision is recorded. Remaining prerequisites are listed in
 `docs/verification/package-a-traceability.md`.

@@ -121,6 +121,11 @@ def _render_anchor(
     return frame
 
 
+#: Per-image bound for fixture generation. Not a job deadline: the generator
+#: runs outside the execution service, so it owns this allowance explicitly.
+FIXTURE_WRITE_TIMEOUT_SECONDS = 60.0
+
+
 def generate_clip(
     clip: FixtureClip,
     out_dir: Path,
@@ -136,7 +141,10 @@ def generate_clip(
     for animation_index in clip.anchor_indices:
         frame = _render_anchor(clip, animation_index, width, height)
         path = out_dir / f"{clip.clip_id}_a{animation_index:03d}.png"
-        write_png_rgb24(resolved, frame, path)
+        # An offline generator has no job deadline, so it states its own
+        # bound rather than inheriting one: a stalled encoder must not hang
+        # a fixture build indefinitely.
+        write_png_rgb24(resolved, frame, path, timeout=FIXTURE_WRITE_TIMEOUT_SECONDS)
         anchors.append(
             InputAnchor(
                 anchor_id=f"{clip.clip_id}#{animation_index:03d}",

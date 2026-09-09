@@ -26,10 +26,14 @@ from typing import Any
 
 from animalite import __version__
 from animalite.adapters.registry import Registry, default_registry
+from animalite.adapters.rife_ncnn import RIFE_PROFILE
+from animalite.adapters.rife_provision import ProvisioningError, provision
 from animalite.adapters.rife_runtime import PINNED_MODELS, RIFE_RELEASE, RifeRuntime
+from animalite.admission import AdmissionStore, evaluate_admission
 from animalite.bench.evaluate import build_report
 from animalite.bench.ledger import RunLedger
 from animalite.bench.runner import BenchmarkRunner, build_plan, load_dataset, load_host_record
+from animalite.contracts.admission import AdmissionPurpose
 from animalite.contracts.assets import AnchorSet
 from animalite.contracts.base import content_digest
 from animalite.contracts.benchmark import (
@@ -232,23 +236,74 @@ def cmd_render(args: argparse.Namespace) -> int:
 
 
 def cmd_runtime_status(args: argparse.Namespace) -> int:
-    """Report whether the pinned learned runtime is installed and verified."""
+    """Report install, verification, compatibility and admission -- separately.
+
+    Nothing here executes the runtime. The previous version called
+    ``version_probe()`` whenever a file existed, so a binary whose digest had
+    just failed was executed by the command reporting that it could not be
+    trusted. Running it now needs ``--probe``, and ``--probe`` needs verified
+    digests: the refusal is in :meth:`RifeRuntime.version_probe` itself, not
+    only in this caller.
+    """
     runtime = RifeRuntime.discover()
     model_name = args.model
-    verification = runtime.verify(model_name)
-    payload = {
+    inspection = runtime.inspect(model_name)
+    verification = inspection.verification
+    admission = evaluate_admission(RIFE_PROFILE, AdmissionPurpose(args.purpose))
+
+    banner: str | None = None
+    probe_note: str | None = None
+    if getattr(args, "probe", False):
+        if not inspection.verified:
+            probe_note = (
+                "refused to probe: the pinned digests are not verified, and "
+                "unverified bytes are never executed"
+            )
+        elif not admission.admitted:
+            # A usage banner is still an execution of the artifact. Reading the
+            # ELF header answers the compatibility question without running it,
+            # so there is no need to make an exception here.
+            probe_note = (
+                "refused to probe: running the executable is an execution of the "
+                f"artifact, and admission is {admission.state!r}. Compatibility is "
+                "reported above from the file's headers, without executing it."
+            )
+        else:
+            try:
+                banner = runtime.version_probe(inspection, timeout=30.0)
+            except AnimaLiteError as exc:
+                probe_note = str(exc)
+
+    payload: dict[str, Any] = {
         "release": RIFE_RELEASE,
         "runtime_root": str(runtime.root),
         "binary_path": str(runtime.binary_path) if runtime.binary_path else None,
         "models_root": str(runtime.models_root) if runtime.models_root else None,
         "model": model_name,
+        # The four states, kept apart on purpose.
+        "installed": inspection.installed,
+        "hash_verified": inspection.verified,
+        "platform_compatible": inspection.compatible,
+        "execution_admitted": admission.admitted,
         "binary_present": verification.binary_present,
         "binary_verified": verification.binary_verified,
         "model_present": verification.model_present,
         "model_verified": verification.model_verified,
-        "usable": verification.usable,
-        "problems": verification.problems,
-        "usage_banner": runtime.version_probe() if runtime.binary_path else None,
+        "executable_bit": inspection.binary.executable_bit,
+        "is_elf": inspection.binary.is_elf,
+        "needed_libraries": list(inspection.binary.needed_libraries),
+        "missing_libraries": list(inspection.binary.missing_libraries),
+        "admission": {
+            "purpose": args.purpose,
+            "state": admission.state,
+            "reasons": admission.reasons,
+            "record_id": admission.record.record_id if admission.record else None,
+            "directory": str(AdmissionStore.default().directory),
+        },
+        "usable": inspection.compatible and admission.admitted,
+        "problems": inspection.problems,
+        "usage_banner": banner,
+        "probe_note": probe_note,
         "pinned_models": {
             name: {
                 "architecture": m.architecture,
@@ -264,34 +319,38 @@ def cmd_runtime_status(args: argparse.Namespace) -> int:
         print(f"runtime root : {payload['runtime_root']}")
         print(f"binary       : {payload['binary_path'] or 'NOT FOUND'}")
         print(f"model        : {model_name}")
+        print(f"installed    : {payload['installed']}")
         print(
-            f"verified     : binary={verification.binary_verified} "
-            f"weights={verification.model_verified}"
+            f"verified     : {payload['hash_verified']} "
+            f"(binary={verification.binary_verified} weights={verification.model_verified})"
         )
-        print(f"usable       : {verification.usable}")
-        for problem in verification.problems:
+        print(f"compatible   : {payload['platform_compatible']}")
+        print(f"admitted     : {admission.admitted} ({admission.state})")
+        print(f"usable       : {payload['usable']}")
+        if banner:
+            print(f"probe        : {banner}")
+        if probe_note:
+            print(f"probe        : {probe_note}")
+        for problem in payload["problems"]:
             print(f"  problem    : {problem}")
+        for reason in admission.reasons:
+            print(f"  admission  : {reason}")
         for name, meta in payload["pinned_models"].items():
             flag = "arbitrary-timestep" if meta["supports_arbitrary_timestep"] else "MIDPOINT ONLY"
             print(f"  {name:<12} {meta['architecture']:<38} {flag}")
-    if not verification.usable:
+    if not payload["usable"]:
         _note(
-            "runtime not usable; see `animalite runtime fetch --print-instructions` "
-            "for the pinned install"
+            "runtime not usable: verification, platform compatibility and "
+            "recorded execution admission must all hold. See "
+            "`animalite runtime fetch` and docs/licensing/admissions/README.md"
         )
         return EXIT_UNAVAILABLE
     return EXIT_OK
 
 
-def cmd_runtime_fetch(args: argparse.Namespace) -> int:
-    """Print the pinned provisioning steps, or perform them on request.
-
-    Weights and compiled tools are deliberately not committed and never
-    downloaded by CI (handoff sections 3 and 8). Downloading is therefore an
-    explicit operator action, and the digest is verified before the runtime is
-    reported usable.
-    """
-    instructions = f"""\
+def _fetch_instructions() -> str:
+    target = RifeRuntime.discover().root / "rife-ncnn-vulkan-20221029"
+    return f"""\
 Pinned runtime: {RIFE_RELEASE["name"]} {RIFE_RELEASE["version"]}
   source   : {RIFE_RELEASE["source_url"]}
   archive  : sha256:{RIFE_RELEASE["archive_sha256"]} ({RIFE_RELEASE["archive_bytes"]} bytes)
@@ -300,21 +359,63 @@ Pinned runtime: {RIFE_RELEASE["name"]} {RIFE_RELEASE["version"]}
              RIFE trained models: MIT (see docs/licensing.md; the conversion
              chain is an open item for the D-06 reviewer)
 
-Install into {RifeRuntime.discover().root / "rife-ncnn-vulkan-20221029"}:
+`animalite runtime fetch --install` performs exactly the steps below, with a
+byte and time cap on the transfer, digest verification before extraction,
+traversal/symlink/expansion checks, and an atomic swap into the target. Prefer
+it: the manual form below verifies the archive but not the installed files.
 
+  TARGET='{target}'
   curl -fsSL -o rife.zip '{RIFE_RELEASE["source_url"]}'
-  echo '{RIFE_RELEASE["archive_sha256"]}  rife.zip' | sha256sum -c -
+  echo '{RIFE_RELEASE["archive_sha256"]}  rife.zip' | sha256sum -c - || exit 1
   unzip -q rife.zip
   install -D -m755 rife-ncnn-vulkan-20221029-ubuntu/rife-ncnn-vulkan \\
       "$TARGET/rife-ncnn-vulkan"
   cp -r rife-ncnn-vulkan-20221029-ubuntu/rife-v4.6 "$TARGET/"
 
 Then confirm with:  animalite runtime status
+
+Installing the runtime does not permit executing it: a learned render also
+needs a recorded admission decision (docs/licensing/admissions/README.md).
 """
-    print(instructions)
+
+
+def cmd_runtime_fetch(args: argparse.Namespace) -> int:
+    """Print the pinned provisioning steps, or perform them on request.
+
+    Weights and compiled tools are deliberately not committed and never
+    downloaded by CI (handoff sections 3 and 8). Downloading is an explicit
+    operator action -- ``--install`` -- and every digest is verified before
+    anything is placed in the install directory.
+    """
+    if not args.install:
+        print(_fetch_instructions())
+        _note(
+            "printed instructions only; this command downloaded nothing. Pass "
+            "--install to provision, which verifies the archive digest before "
+            "extracting and the installed files before replacing an existing "
+            "install. Model weights are never fetched by CI."
+        )
+        return EXIT_OK
+
+    root = Path(args.root) if args.root else None
+    try:
+        report = provision(root=root, model=args.model, keep_archive=args.keep_archive)
+    except ProvisioningError as exc:
+        _note(f"provisioning failed: {exc}")
+        return EXIT_UNAVAILABLE
+    payload = {
+        "target": str(report.target),
+        "archive_bytes": report.archive_bytes,
+        "installed_files": list(report.installed_files),
+        "binary_verified": report.binary_verified,
+        "model_verified": report.model_verified,
+        "replaced_existing": report.replaced_existing,
+        "notes": list(report.notes),
+    }
+    _emit(payload, as_json=bool(args.json))
     _note(
-        "printed instructions only; this command does not download anything. "
-        "Model weights are never fetched by CI."
+        "installed and verified. Execution additionally requires a recorded "
+        "admission decision; see `animalite runtime status`."
     )
     return EXIT_OK
 
@@ -636,6 +737,7 @@ def _request(args: argparse.Namespace) -> RenderRequest:
         controls=controls,
         timeout_seconds=args.timeout,
         parent_attempt_id=getattr(args, "retry_of", None),
+        execution_purpose=AdmissionPurpose(getattr(args, "purpose", "research")),
     )
 
 
@@ -683,6 +785,16 @@ def _add_request_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument("--request-id", default="cli-request", help="request identifier")
+    parser.add_argument(
+        "--purpose",
+        default=AdmissionPurpose.RESEARCH.value,
+        choices=[p.value for p in AdmissionPurpose],
+        help=(
+            "what this run is for. A learned profile is only executable when a "
+            "recorded admission decision permits this purpose for its exact "
+            "artifacts (see docs/licensing/admissions/README.md)."
+        ),
+    )
     parser.add_argument(
         "--shot-code", default="CLI-SHOT", help="shot code recorded in the manifest"
     )
@@ -762,14 +874,39 @@ def build_parser() -> argparse.ArgumentParser:
 
     runtime = sub.add_parser("runtime", help="inspect the pinned learned model runtime")
     runtime_sub = runtime.add_subparsers(dest="runtime_command", required=True)
-    rt_status = runtime_sub.add_parser("status", help="report install and digest verification")
+    rt_status = runtime_sub.add_parser(
+        "status", help="report install, verification, compatibility and admission"
+    )
     rt_status.add_argument("--model", default="rife-v4.6", choices=sorted(PINNED_MODELS))
+    rt_status.add_argument(
+        "--purpose",
+        default=AdmissionPurpose.RESEARCH.value,
+        choices=[p.value for p in AdmissionPurpose],
+        help="purpose to report execution admission for",
+    )
+    rt_status.add_argument(
+        "--probe",
+        action="store_true",
+        help=(
+            "run the executable to capture its usage banner. Refused unless the "
+            "pinned digests verify AND execution is admitted: a banner is still "
+            "an execution of the artifact."
+        ),
+    )
     rt_status.add_argument("--json", action="store_true")
     rt_status.set_defaults(func=cmd_runtime_status)
     rt_fetch = runtime_sub.add_parser(
-        "fetch", help="print the pinned provisioning steps (downloads nothing)"
+        "fetch", help="print the pinned provisioning steps, or install them with --install"
     )
-    rt_fetch.add_argument("--print-instructions", action="store_true", default=True)
+    rt_fetch.add_argument(
+        "--install",
+        action="store_true",
+        help="download and install the pinned release (bounded, verified, atomic)",
+    )
+    rt_fetch.add_argument("--root", default=None, help="runtime root to install into")
+    rt_fetch.add_argument("--model", default="rife-v4.6", choices=sorted(PINNED_MODELS))
+    rt_fetch.add_argument("--keep-archive", action="store_true")
+    rt_fetch.add_argument("--json", action="store_true")
     rt_fetch.set_defaults(func=cmd_runtime_fetch)
 
     benchmark = sub.add_parser("benchmark", help="plan, run and report benchmark measurements")

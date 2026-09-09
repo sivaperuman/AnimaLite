@@ -229,3 +229,104 @@ def test_an_envelope_cannot_introduce_an_adapter(tmp_path):
     args = build_parser().parse_args(["render", "--envelope", str(path)])
     with pytest.raises(ProfileNotFoundError, match="not-registered-anywhere"):
         _registry(args)
+
+
+# --- runtime status must not execute unverified bytes (B-R4) -----------------
+
+
+def _marker_binary(tmp_path, marker):
+    """A harmless executable that records the fact it was run."""
+    import stat
+
+    path = tmp_path / "rife-ncnn-vulkan"
+    path.write_text(f"#!/bin/sh\ntouch '{marker}'\necho 'Usage: fake'\n")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IRUSR)
+    return path
+
+
+def test_runtime_status_never_executes_a_binary_that_failed_its_digest(
+    tmp_path, monkeypatch, capsys
+):
+    """Reported ``binary_verified=false`` and exit 3 -- and still ran the file.
+
+    ``version_probe()`` was called whenever a file existed, so the command that
+    exists to say "these bytes cannot be trusted" executed them to print a
+    banner. A test executable that writes a marker makes that visible.
+    """
+    marker = tmp_path / "EXECUTED"
+    binary = _marker_binary(tmp_path, marker)
+    monkeypatch.setenv("ANIMALITE_RIFE_BIN", str(binary))
+    monkeypatch.setenv("ANIMALITE_RIFE_MODELS", str(tmp_path))
+    (tmp_path / "rife-v4.6").mkdir()
+
+    code = main(["runtime", "status", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert not marker.exists(), "runtime status executed a binary whose digest failed"
+    assert payload["binary_verified"] is False
+    assert payload["usable"] is False
+    assert code == 3
+
+
+def test_runtime_status_refuses_to_probe_unverified_bytes(tmp_path, monkeypatch, capsys):
+    """Even asked explicitly: --probe is not a way around verification."""
+    marker = tmp_path / "EXECUTED"
+    binary = _marker_binary(tmp_path, marker)
+    monkeypatch.setenv("ANIMALITE_RIFE_BIN", str(binary))
+    monkeypatch.setenv("ANIMALITE_RIFE_MODELS", str(tmp_path))
+    (tmp_path / "rife-v4.6").mkdir()
+
+    main(["runtime", "status", "--probe", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert not marker.exists(), "--probe executed unverified bytes"
+    assert payload["usage_banner"] is None
+    assert "refused to probe" in payload["probe_note"]
+
+
+def test_runtime_status_separates_installed_verified_compatible_and_admitted(
+    tmp_path, monkeypatch, capsys
+):
+    """Four different questions; a single "usable" flag hid three of them."""
+    binary = _marker_binary(tmp_path, tmp_path / "EXECUTED")
+    monkeypatch.setenv("ANIMALITE_RIFE_BIN", str(binary))
+    monkeypatch.setenv("ANIMALITE_RIFE_MODELS", str(tmp_path))
+    (tmp_path / "rife-v4.6").mkdir()
+
+    main(["runtime", "status", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    for key in ("installed", "hash_verified", "platform_compatible", "execution_admitted"):
+        assert key in payload, f"{key} is not reported separately"
+    assert payload["execution_admitted"] is False
+    assert payload["admission"]["state"] == "missing"
+    # Compatibility is only meaningful once the bytes are verified.
+    assert payload["platform_compatible"] is False
+
+
+def test_runtime_fetch_downloads_nothing_without_install(capsys):
+    code = main(["runtime", "fetch"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "TARGET=" in out, "the instructions never defined TARGET"
+    assert "|| exit 1" in out, "a failed checksum did not stop the instructions"
+    assert "--install" in out
+
+
+def test_runtime_status_refuses_to_probe_without_admission(tmp_path, monkeypatch, capsys):
+    """A usage banner is still an execution of the artifact (DEC-0016).
+
+    Compatibility is answered from the ELF header, so there is nothing the probe
+    is needed for that would justify an exception.
+    """
+    from animalite.adapters.rife_runtime import RifeRuntime
+
+    inspection = RifeRuntime.discover().inspect("rife-v4.6")
+    if not inspection.verified:
+        pytest.skip("PENDING (not run): the pinned runtime is not installed and verified here")
+
+    main(["runtime", "status", "--probe", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["hash_verified"] is True
+    assert payload["execution_admitted"] is False
+    assert payload["usage_banner"] is None
+    assert "admission is 'missing'" in payload["probe_note"]

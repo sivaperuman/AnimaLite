@@ -328,6 +328,7 @@ def test_an_extreme_integer_reaching_the_adapter_directly_is_an_adapter_error(tm
         anchors=anchors,
         profile=default_registry().profile("fixture-synthetic"),
         scratch_dir=tmp_path,
+        tools=TOOLS,
         controls={"ease": "linear", "drift_pixels": 10**1000},
     )
     with pytest.raises(AdapterError, match="drift_pixels"):

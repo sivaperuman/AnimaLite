@@ -153,7 +153,9 @@ def test_ffmpeg_is_invoked_with_an_argument_array_not_a_shell_string(tools, tmp_
     hostile_dir.mkdir()
     clip = FIXTURE_CLIPS["fixture-two-anchor"]
     anchors = generate_clip(clip, hostile_dir, tools=tools)
-    frame = decode_image_rgb24(tools, Path(anchors.anchors[0].asset.path), width=64, height=36)
+    frame = decode_image_rgb24(
+        tools, Path(anchors.anchors[0].asset.path), width=64, height=36, timeout=60.0
+    )
     assert frame.shape == (36, 64, 3)
     assert not (tmp_path / "pwned").exists()
     assert not Path("pwned").exists()
@@ -260,7 +262,9 @@ def test_controls_do_not_alter_approved_anchor_frames(service, fixture_anchors, 
     ]
     for label, controls in cases:
         anchor_frames = {
-            a.animation_index: decode_image_rgb24(tools, Path(a.asset.path), width=640, height=360)
+            a.animation_index: decode_image_rgb24(
+                tools, Path(a.asset.path), width=640, height=360, timeout=60.0
+            )
             for a in fixture_anchors.anchors
         }
         context = AdapterContext(
@@ -269,6 +273,7 @@ def test_controls_do_not_alter_approved_anchor_frames(service, fixture_anchors, 
             anchors=fixture_anchors,
             profile=FIXTURE_PROFILE,
             scratch_dir=tmp_path / f"scratch-{label}",
+            tools=tools,
             controls=FIXTURE_PROFILE.effective_controls(controls),
         )
         frames_by_control[label] = list(FixtureAdapter().synthesize(context))

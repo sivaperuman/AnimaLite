@@ -23,13 +23,39 @@ timestep. Asked for t = 0.25 / 0.50 / 0.75 between two anchors 40.88 px apart:
 | model | t=0.25 | t=0.50 | t=0.75 | |
 | --- | --- | --- | --- | --- |
 | `rife-v4.6` | 149.29 | 159.84 | 170.40 | monotonic; expected 149.1 / 159.3 / 169.6 |
-| `rife-anime` | **170.40** | 158.89 | 158.89 | **non-monotonic — the subject moves backwards** |
+| `rife-anime` | 170.40 | 158.89 | 158.89 | **explanation unverified — see below** |
 
-The critical property is that `rife-anime` **does not fail**. It returns a
-well-formed, plausible-looking frame that is temporally wrong. Nothing
-downstream — decode validation, frame accounting, duration checks — would catch
-it, because every one of those checks passes. Only comparing against known
-motion reveals it.
+### Correction: the "it fails silently" explanation does not hold
+
+An earlier version of this record said the critical property was that
+`rife-anime` **does not fail** — that it returns a well-formed but temporally
+wrong frame. The pinned wrapper contradicts that. In
+[`main.cpp` at the pinned commit](https://github.com/nihui/rife-ncnn-vulkan/blob/a7532fc3f9f8f008cd6eecd6f2ffe2a9698e0cf7/src/main.cpp#L685):
+
+```c
+if (!rife_v4 && (numframe != 0 || timestep != 0.5))
+{
+    fprintf(stderr, "only rife-v4 model support custom numframe and timestep\n");
+    return -1;
+}
+```
+
+A non-v4 model with a non-0.5 timestep **exits −1 and writes no output**. So the
+binary refuses; it does not return a wrong frame.
+
+The `rife-anime` row above is therefore recorded as **unverified**. The exact
+binary path, model digests, argv and exit status from that run were not
+retained, so the reading cannot be reconstructed. The repeated 158.89 is
+consistent with the tool having refused and the measurement having read a stale
+or duplicated output file, but that is a hypothesis, not a finding, and no
+further model experiment is being run to repair prose.
+
+The decision is unaffected, and rests on two things that are checkable now:
+
+* the architecture is midpoint-only, which the 72-frame contract cannot use;
+* the pinned binary refuses the combination outright, so the failure mode is a
+  mid-render subprocess error rather than a validation message — which is
+  exactly why the rejection belongs in `validate()`, before anything runs.
 
 Section 12.0 needs frames at arbitrary animation indices (frame *k* between
 anchors *i* and *j* is at t = (k−i)/(j−i)), so a midpoint-only model is

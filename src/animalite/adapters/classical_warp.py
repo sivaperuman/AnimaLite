@@ -1,15 +1,17 @@
 """The classical warp/flow comparator.
 
 Requirements §6.0: "Evaluate a classical warp/flow baseline and one pinned
-RIFE/ncnn CPU candidate first." This is that baseline, and its job is to be
-*beaten*, not to pass.
+RIFE/ncnn CPU candidate first." This is that baseline: the non-learned reference
+the learned candidate is measured against, on the same inputs and within the
+same resource envelope. It is meant to be *credible*, not to lose.
 
-Why a comparator earns its place. A test the learned candidate passes is only
-evidence of learned temporal capability if a non-learned method fails it. The
-PR-1 review made exactly this point about the disc test: a classical motion
-algorithm could also pass it, so passing alone certifies nothing. Running this
-adapter over the same clips answers "would a baseline have done this too?" with
-a measurement instead of an assumption.
+Why a comparator earns its place. When a classical method passes the same
+example the learned candidate passes, that does not negate the learned
+participation -- it means *that example* cannot identify the mechanism or show a
+learned advantage. The PR-1 review made this point about the disc test. Running
+this adapter over the same clips turns "would a baseline have done this too?"
+into a measurement, and a fair one: the comparator is meant to be a credible
+reference, not weakened until the learned candidate wins.
 
 It cannot itself qualify, and not merely by declaration: MR-018 requires the
 learned component to participate in temporal synthesis, and there is no learned
@@ -24,7 +26,6 @@ warps and a blend per frame.
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Iterator
 
 import numpy as np
@@ -77,18 +78,44 @@ _SUPPORTED_CONTROLS = ("block_size", "search_radius", "accept_margin")
 _BLOCK_SIZES = (8, 16, 32)
 _MAX_SEARCH_RADIUS = 64
 
+#: Controls measured in whole pixels. A fractional value is rejected rather
+#: than truncated: `search_radius=0.5` validated and then searched radius 0.
+_INTEGRAL_CONTROLS = ("block_size", "search_radius")
 
-def _coerce_numeric(value: float | int | str | bool, field: str) -> float:
+
+def _coerce_numeric(
+    value: float | int | str | bool, field: str, *, integral: bool = False
+) -> float:
     """Reject a control that is not a plain finite number.
 
     ``bool`` is rejected explicitly: it is an ``int`` subclass, and ``True`` as a
     search radius is a mistake rather than a radius of one.
+
+    Three things this has to survive, each of which got past an earlier version:
+
+    * ``10 ** 1000`` -- a Python int larger than a float, where ``float(value)``
+      raises ``OverflowError``. That escaped validation as an unhandled
+      exception rather than arriving as a validation issue.
+    * ``float("nan")`` and the infinities, which compare false against every
+      bound and so pass a range check.
+    * ``0.5`` for an integral control, which validated and then truncated to
+      zero at ``int()`` -- a silently different search from the requested one.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise AdapterError(f"{field} must be a number, got {value!r}")
-    numeric = float(value)
+    try:
+        numeric = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise AdapterError(
+            f"{field} is out of the representable numeric range: {value!r} ({exc})"
+        ) from exc
     if not np.isfinite(numeric):
         raise AdapterError(f"{field} must be finite, got {value!r}")
+    if integral and numeric != int(numeric):
+        raise AdapterError(
+            f"{field} must be a whole number of pixels, got {value!r}; it would "
+            "otherwise be truncated and a different search would run"
+        )
     return numeric
 
 
@@ -123,7 +150,7 @@ def _validate_controls(
             )
             continue
         try:
-            numeric = _coerce_numeric(value, name)
+            numeric = _coerce_numeric(value, name, integral=name in _INTEGRAL_CONTROLS)
         except AdapterError as exc:
             issues.append(invalid(name, str(exc), f"Pass a finite number for {name!r}."))
             continue
@@ -231,11 +258,14 @@ class ClassicalWarpAdapter:
                 "Deterministic: identical inputs and settings yield identical frames.",
                 "No learned component; cannot satisfy MR-018 or AT-055/AT-056.",
                 "Exists as the control for the learned candidate: a test this "
-                "adapter also passes is not evidence of learned capability.",
-                "Motion beyond the search radius is not found; the estimator "
-                "reports no motion rather than a confident wrong displacement.",
-                "Cancellation and the job deadline are checked between animation "
-                "frames, so both take effect within one frame rather than instantly.",
+                "adapter also passes cannot, on its own, identify the mechanism "
+                "or establish a learned advantage over a non-learned method.",
+                "Block matching is a local minimisation with no notion of "
+                "correctness: repeating texture, occlusion and motion beyond the "
+                "search radius all yield confident, wrong displacements, and the "
+                "output does not distinguish them from good matches.",
+                "Cancellation and the job deadline are checked inside the search "
+                "as well as between frames.",
             ],
         )
 
@@ -275,7 +305,9 @@ class ClassicalWarpAdapter:
         """
         output = context.output
         anchors = context.anchors
-        params = context.controls
+        # Defaults with the request's validated overrides applied: the same
+        # resolved mapping validation checked, so the two cannot disagree.
+        params = context.effective_controls()
 
         problems = _validate_controls(dict(params), output)
         blocking = [i for i in problems if i.severity is IssueSeverity.ERROR]
@@ -285,24 +317,28 @@ class ClassicalWarpAdapter:
             raise AdapterError(blocking[0].message)
 
         block_size = int(
-            _coerce_numeric(params.get("block_size", DEFAULT_BLOCK_SIZE), "block_size")
+            _coerce_numeric(
+                params.get("block_size", DEFAULT_BLOCK_SIZE), "block_size", integral=True
+            )
         )
         search_radius = int(
-            _coerce_numeric(params.get("search_radius", DEFAULT_SEARCH_RADIUS), "search_radius")
+            _coerce_numeric(
+                params.get("search_radius", DEFAULT_SEARCH_RADIUS),
+                "search_radius",
+                integral=True,
+            )
         )
         accept_margin = _coerce_numeric(
             params.get("accept_margin", DEFAULT_ACCEPT_MARGIN), "accept_margin"
         )
 
         indices = anchors.indices
-        cancel = context.cancel_requested
         cached_pair: tuple[int, int] | None = None
         forward: NDArray[np.float32] | None = None
         backward: NDArray[np.float32] | None = None
 
         for frame_index in range(output.animation_frame_count):
-            if isinstance(cancel, threading.Event) and cancel.is_set():
-                return
+            context.checkpoint(f"synthesizing animation frame {frame_index}")
             left_pos = max(i for i, idx in enumerate(indices) if idx <= frame_index)
             if indices[left_pos] == frame_index:
                 # An approved anchor is delivered exactly, never re-sampled.
@@ -314,12 +350,21 @@ class ClassicalWarpAdapter:
             right = context.anchor_frames[right_idx]
 
             if cached_pair != (left_idx, right_idx):
+                # The search is the expensive part -- seconds, not milliseconds --
+                # so it carries the cooperative stopping point. Checking only
+                # between frames left cancellation waiting out a whole search.
+                def checkpoint(pair: tuple[int, int] = (left_idx, right_idx)) -> None:
+                    context.checkpoint(
+                        f"estimating classical flow for anchors {pair[0]}->{pair[1]}"
+                    )
+
                 forward = estimate_block_flow(
                     left,
                     right,
                     block_size=block_size,
                     search_radius=search_radius,
                     accept_margin=accept_margin,
+                    checkpoint=checkpoint,
                 )
                 backward = estimate_block_flow(
                     right,
@@ -327,6 +372,7 @@ class ClassicalWarpAdapter:
                     block_size=block_size,
                     search_radius=search_radius,
                     accept_margin=accept_margin,
+                    checkpoint=checkpoint,
                 )
                 cached_pair = (left_idx, right_idx)
                 context.notes.append(

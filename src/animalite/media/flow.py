@@ -15,6 +15,12 @@ The method is standard: full-search block matching for a piecewise-constant flow
 field, bilinear upsampling to per-pixel flow, bilinear backward warping of both
 anchors toward the requested time, and a time-weighted blend.
 
+Known ambiguity, stated because a comparator whose limits are hidden is a poor
+control: block matching is a local minimisation with no notion of correctness.
+Repeating texture, occlusion and motion larger than the search radius all
+produce confident, wrong displacements, and nothing in the result distinguishes
+those from good matches.
+
 Flow convention, used consistently below: ``flow[y, x] = (dx, dy)`` is the
 displacement ``d`` for which ``source[p] ≈ destination[p + d]``. Landing content
 at time ``t`` therefore samples the source at ``-t·d``; sampling at ``+t·d``
@@ -22,6 +28,8 @@ moves it the wrong way and silently degrades to roughly cross-fade quality.
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -43,8 +51,15 @@ __all__ = [
 #: designed around: requiring exact division would reject the P-L output spec.
 DEFAULT_BLOCK_SIZE = 16
 
-#: Full-search radius in pixels. Motion beyond this is not found; the estimator
-#: reports the zero displacement rather than a confident wrong one.
+#: Full-search radius in pixels. Motion beyond this is simply not searched, and
+#: the estimator has NO way to report that: it returns the best within-window
+#: candidate that beats standing still, which for real texture is usually some
+#: nonzero, wrong displacement. Measured on a deterministic 64x96 random texture
+#: translated 24 px and searched at radius 4, 95 of 96 blocks returned nonzero
+#: flow. An earlier version of this comment claimed the zero incumbent made
+#: out-of-range motion report zero; it does not, and only a flat or near-flat
+#: region behaves that way. Choose a radius that covers the expected motion, and
+#: read the output as "displacement within +/-radius", never as detection.
 DEFAULT_SEARCH_RADIUS = 16
 
 #: A displacement must beat standing still by this mean absolute difference per
@@ -69,6 +84,7 @@ def estimate_block_flow(
     block_size: int = DEFAULT_BLOCK_SIZE,
     search_radius: int = DEFAULT_SEARCH_RADIUS,
     accept_margin: float = DEFAULT_ACCEPT_MARGIN,
+    checkpoint: Callable[[], None] | None = None,
 ) -> NDArray[np.float32]:
     """Estimate a piecewise-constant flow field by full-search block matching.
 
@@ -76,9 +92,15 @@ def estimate_block_flow(
 
     The zero displacement is the incumbent, not a candidate: the search starts
     from "nothing moved" and only accepts a displacement that improves the match
-    by ``accept_margin``. That ordering is what keeps flat regions still, and it
-    is also why an unmatchable region reports no motion instead of a confident
-    wrong one.
+    by ``accept_margin``. That ordering keeps flat regions still. It does **not**
+    make the estimate reliable for motion outside the window -- see the module
+    docstring; a block whose true match is out of range can still find a
+    within-range candidate that beats standing still, and it is accepted.
+
+    ``checkpoint`` is called once per displacement row and may raise to abandon
+    the search. Full search at radius 16 takes seconds on a 640x360 frame, and
+    without a cooperative stopping point neither cancellation nor the job
+    deadline could interrupt it before the whole search had finished.
     """
     if source.shape != destination.shape:
         raise ValueError(
@@ -117,6 +139,8 @@ def estimate_block_flow(
     best = block_cost(0, 0)
     flow = np.zeros((blocks_y, blocks_x, 2), dtype=np.float32)
     for dy in range(-search_radius, search_radius + 1):
+        if checkpoint is not None:
+            checkpoint()
         for dx in range(-search_radius, search_radius + 1):
             if dx == 0 and dy == 0:
                 continue
