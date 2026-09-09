@@ -27,7 +27,7 @@ pipeline end to end without any model weights or private artwork.
 | Host/environment inventory (`animalite doctor`) | Working |
 | Benchmark harness: run ledger, stage/end-to-end timing, process-group memory where supported, median / nearest-rank p95 / maximum, failed-and-missing-run retention, qualification eligibility evaluator | Working |
 | Learned CPU temporal model (`rife-ncnn-v4.6-cpu`, CPU-only) | Working — runtime installed out of band and hash-verified |
-| Classical warp/flow comparator | **Not implemented** — Package B |
+| Classical warp/flow comparator (`classical-warp-baseline`, block matching, **not** learned) | Working — the control the learned candidate must beat (DEC-0015) |
 | §12.0 qualification measurements (AT-055 / AT-056) | **Not run** — Package C, and blocked on the D-02 host approval |
 | Web/review UI, project storage, queue, export, cloud or GPU execution, training | **Out of scope** for this stage |
 

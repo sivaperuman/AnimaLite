@@ -105,7 +105,7 @@ Status values below:
 | MR-013 | Thread budget, memory method, storage and stage timings recorded per attempt | Partial — setup/attempt/cost fields await real profiles |
 | MR-015 | No network client exists in the package; `DeviceEvidence.network_calls_observed_status` is `pending`, not asserted | **No** — honest `pending`, not a claim |
 | MR-016 | `EngineProfile` declares class, tiers, required assets and CPU-only guarantee | Implementation evidence only |
-| MR-018 | Package B integrates a learned model whose temporal participation is **measured**, not declared: it synthesizes a moving subject (MAE 0.187 vs ground truth) where a cross-fade does not (1.577), asserted in `tests/test_rife_adapter.py`. The fixture adapter remains structurally barred (DEC-0008). | **No.** The capability is evidenced; the *requirement* needs the locked sample on the D-02-approved host under AT-055/AT-056. |
+| MR-018 | Package B integrates a learned model whose temporal participation is **measured**, not declared: it synthesizes a moving subject (MAE 0.187 vs ground truth) where a cross-fade does not (1.577), asserted in `tests/test_rife_adapter.py`. The fixture adapter remains structurally barred (DEC-0008), and the `classical-warp-baseline` comparator (DEC-0015) is barred for the same reason while providing the non-learned control: a test the baseline also passes is not evidence of learned capability. | **No.** The capability is evidenced; the *requirement* needs the locked sample on the D-02-approved host under AT-055/AT-056. |
 | MR-015 | Learned inference runs with explicit `-g -1`; on this host Vulkan cannot initialise at all, recorded as positive device evidence. `network_calls_observed_status` remains `pending`. | Partial — device evidence measured, offline behaviour still unevidenced |
 | MR-012 | Code, runtime and **weight** licences recorded separately from primary sources; the conversion chain is `pending`/`use_eligible=false` (DEC-0013) | No — deliberately unresolved, and it blocks qualification |
 | C-04 | The evaluator blocks qualification on `ELIG-LICENCE-NOT-CLEARED`, and on `ELIG-LICENCE-MISSING` when a profile carries no evaluation at all | Implementation evidence only |
@@ -124,6 +124,7 @@ Status values below:
 | Prerequisite | State |
 | --- | --- |
 | A learned CPU temporal adapter with participating learned synthesis | **Implemented** (`rife-ncnn-v4.6-cpu`), participation measured |
+| A classical warp/flow comparator (§6.0) | **Implemented** (`classical-warp-baseline`); beats a cross-fade 15.6x on a known 24px translation, and cannot be marked qualification-eligible (DEC-0015) |
 | Verified upstream code + weight licences for that adapter | Evidence gathered; **disposition unresolved** (DEC-0013, LIC-05) |
 | D-02-approved P-L host with recorded SKU, power and thermal policy | Not approved |
 | D-02-signed §12.0 targets | Not signed — targets remain proposed |

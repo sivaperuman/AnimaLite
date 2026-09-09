@@ -8,6 +8,10 @@ registered without touching validation, the service or the media pipeline.
 from __future__ import annotations
 
 from animalite.adapters.base import MotionAdapter
+from animalite.adapters.classical_warp import (
+    CLASSICAL_WARP_PROFILE,
+    ClassicalWarpAdapter,
+)
 from animalite.adapters.fixture import FIXTURE_PROFILE, FixtureAdapter
 from animalite.adapters.rife_ncnn import RIFE_PROFILE, RifeNcnnAdapter
 from animalite.contracts.profile import EngineProfile
@@ -74,4 +78,6 @@ def default_registry() -> Registry:
     registry.register_profile(FIXTURE_PROFILE)
     registry.register_adapter(RifeNcnnAdapter())
     registry.register_profile(RIFE_PROFILE)
+    registry.register_adapter(ClassicalWarpAdapter())
+    registry.register_profile(CLASSICAL_WARP_PROFILE)
     return registry

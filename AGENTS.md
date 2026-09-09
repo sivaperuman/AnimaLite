@@ -19,6 +19,9 @@
   deterministic fixture adapter.
 - Build the CLI, common contracts and benchmark first, then one learned CPU adapter.
 - Use one classical comparator; it cannot satisfy learned temporal capability.
+  Implemented as `classical-warp-baseline` (DEC-0015): block matching in NumPy,
+  structurally barred from qualifying, and there to be beaten. A test it also
+  passes is not evidence of learned capability.
 - Keep UI, episode services, cloud/GPU branches and training outside the first proof.
 - Missing hardware evidence leaves qualification pending; continue useful coding.
 

@@ -39,10 +39,10 @@ Resolved exactly the pinned set: `animalite 0.1.0`, `pydantic 2.13.5`,
 | Command | Result |
 | --- | --- |
 | `ruff check --no-cache .` | `All checks passed!` — exit 0 |
-| `ruff format --no-cache --check .` | `85 files already formatted` — exit 0 |
-| `mypy` (with `.mypy_cache` removed) | `Success: no issues found in 57 source files` — exit 0 (strict mode for `src/`) |
-| `python -m pytest -m "not slow" -q -p no:cacheprovider` | `187 passed, 41 deselected in 41.96s` — exit 0 |
-| `python -m pytest -q -p no:cacheprovider` | `228 passed in 129.19s` — exit 0 |
+| `ruff format --no-cache --check .` | `96 files already formatted` — exit 0 |
+| `mypy` (with `.mypy_cache` removed) | `Success: no issues found in 64 source files` — exit 0 (strict mode for `src/`) |
+| `python -m pytest -m "not slow" -q -p no:cacheprovider` | `223 passed, 44 deselected in 50.69s` — exit 0 |
+| `python -m pytest -q -p no:cacheprovider` | `267 passed in 180.99s` — exit 0 |
 
 > **Why the caches are disabled here.** The first CI run failed on `ruff check`
 > with four `I001` import-order findings that a local `ruff check .` had just
@@ -281,6 +281,60 @@ The general lesson is the one this PR has now learned four times: an allowance
 added next to a bound weakens the bound, and a persuasive reason for the
 allowance does not change that. The bound is now the only thing that decides,
 and what cannot be finished inside it is *reported* rather than waited for.
+
+## 8f. The classical warp/flow comparator
+
+Executed on the platform above. The comparator is the non-learned control
+required by §6.0; DEC-0015 records why it is implemented in-repo.
+
+```bash
+animalite render --profile classical-warp-baseline \
+    --anchors work/fixture/fixture-two-anchor/anchors.json --workspace work/ws-classical
+```
+
+```
+state     : succeeded
+output    : work/ws-classical/attempts/att-.../output/output.mp4
+decoded   : 640x360 h264/High yuv420p 144 frames @ 24/1 = 6.0s
+frames    : source=2 synthesized=70 duplicated=72 (animation=72, delivery=144)
+qualifying: False
+```
+
+### Measured properties
+
+| Measurement | Value |
+| --- | --- |
+| Cross-fade vs ground truth, known 24 px translation | 75.20 mean absolute error |
+| Motion-compensated, warp sign inverted | 74.31 — i.e. no better than a cross-fade |
+| Motion-compensated, correct | **4.82** (15.6x better than cross-fade) |
+| Estimated displacement vs the true 24 px shift | −23.1 px |
+| Two-anchor fixture, unguarded search | 15.29 px mean, saturating the 16 px radius |
+| Two-anchor fixture, zero displacement as incumbent | 0.83 px mean |
+| Render wall time, `classical-warp-baseline` | 9.02 s |
+| Render wall time, `fixture-synthetic`, same clip | 0.63 s |
+
+The comparator is roughly 14x slower than the fixture cross-dissolve. That is
+not being optimised: full search is quadratic in the radius, and the baseline is
+a quality reference rather than a latency candidate. §12.0 latency targets apply
+to the qualifying profile.
+
+### One bug this section exists to record
+
+Validation initially required the block size to divide the output exactly, on a
+comment that claimed 16 divides 360. It does not — 360 / 16 = 22.5 — so the
+comparator rejected the P-L output spec outright:
+
+```
+state   : failed
+failure : [validation_rejected] block_size 16 does not divide the 640x360 output
+```
+
+The estimator never needed that: it covers whole blocks and the remainder strip
+inherits the nearest block's flow. The rule was stricter than the algorithm and
+the comment asserting it was false. Both are fixed, and
+`test_a_geometry_the_block_size_does_not_divide_still_works` holds the line.
+Every unit test had used geometry that happened to divide, so only the
+end-to-end render caught it.
 
 ## 9. Benchmark harness against the fixtures
 
