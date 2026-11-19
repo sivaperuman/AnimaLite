@@ -1,0 +1,39 @@
+AnimaLite
+Copyright (c) 2026 <COPYRIGHT-HOLDER-PENDING>
+
+OPEN METADATA ITEM: the legal copyright-holder name for AnimaLite has not been
+supplied to the implementation. Every occurrence of <COPYRIGHT-HOLDER-PENDING>
+in this repository is a placeholder awaiting the project owner's decision. It is
+deliberately not filled in with a guessed personal name, company or address.
+See docs/decisions/DEC-0001-licensing-baseline.md.
+
+AnimaLite's own source code is licensed under the PolyForm Noncommercial License
+1.0.0. The full, unmodified license text is in the root LICENSE file. AnimaLite
+is source-available, not OSI open source: the noncommercial restriction does not
+meet the Open Source Definition.
+
+This NOTICE covers original AnimaLite software only.
+
+Third-party components keep their own terms. AnimaLite's license grants no
+rights over them, and adding a noncommercial license to this repository does not
+change, extend or revoke any upstream grant. The components AnimaLite depends on
+or invokes, together with their versions, licenses and how they are used, are
+recorded in THIRD_PARTY_NOTICES.md. Licensing scope, known obligations and open
+questions are discussed in docs/licensing.md.
+
+In particular:
+
+  * FFmpeg and FFprobe are invoked as separately installed external executables.
+    They are not bundled, vendored or linked by this repository. FFmpeg's own
+    terms depend on the components enabled in the build that is installed; the
+    build actually used is recorded by `animalite doctor`. See
+    https://ffmpeg.org/legal.html.
+
+  * No model weights or upstream model source are present in this repository.
+    Package A integrates no learned model. When Package B adds one, its code,
+    weight and asset licenses are recorded separately in
+    THIRD_PARTY_NOTICES.md and docs/licensing.md; a model repository's
+    top-level badge is not sufficient evidence.
+
+Do not add AnimaLite copyright headers to third-party files, and do not claim
+ownership of an unmodified upstream checkpoint or source file.

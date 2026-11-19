@@ -1,0 +1,17 @@
+{
+  "schema_version": "animalite.contracts/v1",
+  "quality_reviews": [],
+  "fresh_input_packs": [],
+  "unsupported_cases": [],
+  "continuous_workload": null,
+  "offline_rerun_status": "pending",
+  "device_trace_status": "pending",
+  "notes": [
+    "TEMPLATE ONLY. Every list is empty and both statuses are `pending`, so passing this file to `animalite benchmark run --evidence` produces blocking findings for each missing item. That is the intended default: empty means missing, never 'nothing went wrong'.",
+    "quality_reviews: two independent reviewers per clip, each recording identity_score, motion_score, any_dimension_zero, max_defect_severity and endpoint_check_passed. A clip passes only at >=8/10 on both scores with no zero dimension and no severity-2/3 defect (section 12.0, section 15.2). Latency cannot waive quality.",
+    "fresh_input_packs: the four AT-056 packs, each recording active_preparation_seconds (<=300) and automatic_preprocessing_seconds (<=30), with used_prebuilt_rig_or_layers and used_accelerator_preparation both false.",
+    "unsupported_cases: the four locked out-of-scope categories -- large_viewpoint_change, newly_exposed_unseen_content, scene_cut, conflicting_anchor_timing -- each rejected or explicitly routed to redesign before synthesis.",
+    "continuous_workload: the continuous 20-minute workload with thermal/power throttling observations and whether latency or memory limits were breached.",
+    "offline_rerun_status / device_trace_status: set to `measured` only from an actual offline rerun and an actual runtime/device trace. AT-056 requires proving CPU-only inference and encode; a presence scan of device nodes is not that proof."
+  ]
+}
