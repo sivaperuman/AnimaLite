@@ -32,4 +32,4 @@ Edit `milo.svg` or `owner.svg` to change the head, torso or shoe. Each named gro
 
 The Godot experiment drives actual Bone2D chains and the engine’s two-bone IK modifier, then rasterizes the posed vector layers using its CPU image API. The Python comparison solves each chain analytically and streams resvg output. Neither path requires a display, weights, generated stock footage or a video service.
 
-The draft PR includes playable review assets and the [backend decision and measured results](../../docs/decisions/STUDIO-S1-rig-feasibility.md).
+The draft PR includes a [decoded frame sheet](../../docs/verification/studio-s1/contact-sheet.webp), the [four run records](../../docs/verification/studio-s1/runs.json) and the [backend decision](../../docs/decisions/STUDIO-S1-rig-feasibility.md). The shared workspace review player offers the MP4s and raw evidence ZIP. Repository hosting of the videos is pending.
