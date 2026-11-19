@@ -130,8 +130,20 @@ def actor_layers(actor, joints, frame):
     return "".join(parts)
 
 
-def palm(center, milo, point=False):
-    color = "#efb077" if milo else "#dfa17e"
+# Each hand has a distinct fill so the final raster identifies the carrying hand.
+HAND_COLORS = {
+    ("milo", 0): "#db9969",
+    ("milo", 1): "#f2b478",
+    ("owner", 0): "#ce8f70",
+    ("owner", 1): "#e5aa82",
+}
+INSPECTOR_HAND_COLORS = {**HAND_COLORS, ("owner", 0): "#b67b50", ("owner", 1): "#ca8b58"}
+PAPER_FILL = "#246b88"
+PAPER_EDGE = "#183f54"
+
+
+def palm(center, milo, point=False, color=None):
+    color = color or ("#efb077" if milo else "#dfa17e")
     thumb = "M0-1q-3-5-5-4-2 1 0 5" if milo else "M0-1q3-5 5-4 2 1 0 5"
     fingers = "M2 1l-12-4q-4-1-4 1t11 7" if point else thumb
     return place(
@@ -151,7 +163,7 @@ def blueprint(paper):
     art = [
         f'<path d="M{-w} {-h} Q-4 {-h - 2} 0 {-h + 2 * crease} L{w} {-h + kink / 2} '
         f'L{w} {h} Q6 {h - 3 * crease} 0 {h + crease} L{-w} {h}z" '
-        'fill="#246b88" stroke="#183f54" stroke-width="2"/>'
+        f'fill="{PAPER_FILL}" stroke="{PAPER_EDGE}" stroke-width="2"/>'
     ]
     for y in (-14, -7, 0, 7, 14):
         art.append(line([complex(-w + 2, y), complex(w - 2, y)], 0.45, "#689eab"))
@@ -176,20 +188,46 @@ def blueprint(paper):
     return place(paper.center, "".join(art), paper.tilt)
 
 
-def svg(frame, pose, joints, width):
+def svg(frame, pose, joints, width, character="owner", gaze_mode="directed"):
     milo, owner, paper = pose
     zoom, cx, cy = camera(frame)
     layers = [SITE]
     for actor in (milo, owner):
         layers.append(oval(actor.hip.real, 315, 30, 4, "#b69771"))
     for actor, limbs in zip((milo, owner), joints, strict=True):
-        layers.append(actor_layers(actor, limbs, frame))
+        if character == "inspector" and actor.name == "owner":
+            from inspector_art import inspector_layers
+
+            layers.append(inspector_layers(actor, limbs, frame, gaze_mode))
+        else:
+            layers.append(actor_layers(actor, limbs, frame))
     layers.append(blueprint(paper))
     for actor, limbs in zip((milo, owner), joints, strict=True):
         for index, (_, end) in enumerate(limbs[2:]):
+            colors = INSPECTOR_HAND_COLORS if character == "inspector" else HAND_COLORS
+            milo_hand = actor.name == "milo"
+            # The fingertips meet the same grip; the palms approach from opposite sides.
+            offset = -3.7 if milo_hand else 3.7
+            if character == "inspector" and not milo_hand and index == 1:
+                extension = ease(frame, 224, 238)
+                finger = (
+                    f"M1 0 L{-4 - 11 * extension:.2f} {-2 - 4 * extension:.2f} "
+                    f"Q{-8 - 11 * extension:.2f} {-2 - 4 * extension:.2f} "
+                    f"{-5 - 11 * extension:.2f} {1 - 4 * extension:.2f} L-1 4Z"
+                )
+                layers.append(
+                    place(
+                        end + offset,
+                        f'<path d="{finger}" fill="{colors[actor.name, index]}" '
+                        f'stroke="{INK}" stroke-width="1.3"/>',
+                    )
+                )
             layers.append(
                 palm(
-                    end, actor.name == "milo", actor.name == "owner" and index == 1 and frame >= 224
+                    end + offset,
+                    milo_hand,
+                    character == "owner" and not milo_hand and index == 1 and frame >= 224,
+                    colors[actor.name, index],
                 )
             )
     return (

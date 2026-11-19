@@ -15,7 +15,8 @@ from importlib.metadata import version
 from pathlib import Path
 
 from artwork import HERE, svg
-from performance import FRAMES, pose
+from grip_review import visible_grips
+from performance import FRAMES, inspector_pose, pose
 from PIL import Image
 
 from animalite.contracts.media import CadencePolicy, OutputSpec
@@ -35,7 +36,7 @@ def save(path, obj):
     path.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n")
 
 
-def godot_frames(folder, executable, width, deadline):
+def godot_frames(folder, executable, width, deadline, shot, pose_at, character, gaze):
     # The fixed shot bounds scratch to 288 SVGs and PNGs. No scene reads a user script.
     frames = folder / "scratch"
     frames.mkdir()
@@ -68,31 +69,43 @@ def godot_frames(folder, executable, width, deadline):
         if result.returncode or result.survivors or b"SCRIPT ERROR:" in log or b"ERROR:" in log:
             raise RuntimeError(f"Godot {mode} failed. See {folder}/godot-{mode}.log")
 
-    poses = [pose(frame) for frame in range(FRAMES)]
+    # Godot updates bone transforms in place. Replay the cheap IK prefix so a
+    # mid-shot preview has exactly the same poses as the full-shot raster.
+    poses = [pose_at(frame) for frame in range(shot.stop)]
     targets = [
         [chain.controls() for actor in actors[:2] for chain in actor.chains] for actors in poses
     ]
     save(frames / "targets.json", targets)
     call("solve")
     positions = json.loads((frames / "joints.json").read_text())
+    if len(positions) != len(poses):
+        raise ValueError("Godot returned an incomplete solve")
+    poses = poses[shot.start :]
+    positions = positions[shot.start :]
+    if shot.start:
+        save(frames / "joints.json", positions)
     for f, (actors, points) in enumerate(zip(poses, positions, strict=True)):
         pairs = [(complex(x, y), complex(tx, ty)) for x, y, tx, ty in points]
-        (frames / f"{f:03}.svg").write_text(svg(f, actors, (pairs[:4], pairs[4:]), width))
+        (frames / f"{f:03}.svg").write_text(
+            svg(shot[f], actors, (pairs[:4], pairs[4:]), width, character, gaze)
+        )
     call("raster")
-    for f in range(FRAMES):
+    for f in range(len(shot)):
         with Image.open(frames / f"{f:03}.png") as image:
-            yield image.convert("RGB").tobytes()
+            yield poses[f], image.convert("RGB").tobytes()
 
 
-def native_frames(width):
+def native_frames(width, shot, pose_at, character, gaze):
     from resvg_py import svg_to_bytes
 
-    for frame in range(FRAMES):
-        actors = pose(frame)
+    for frame in shot:
+        actors = pose_at(frame)
         joints = [[(c.joint(), c.tip) for c in a.chains] for a in actors[:2]]
-        png = svg_to_bytes(svg_string=svg(frame, actors, joints, width), skip_system_fonts=True)
+        png = svg_to_bytes(
+            svg_string=svg(frame, actors, joints, width, character, gaze), skip_system_fonts=True
+        )
         with Image.open(io.BytesIO(png)) as image:
-            yield image.convert("RGB").tobytes()
+            yield actors, image.convert("RGB").tobytes()
 
 
 def cpu_seconds():
@@ -100,21 +113,34 @@ def cpu_seconds():
     return sum(r.ru_utime + r.ru_stime for r in usage)
 
 
-def render(folder, backend, width):
+def frame_range(first, stop):
+    if not 0 <= first < stop <= FRAMES or stop - first < 2:
+        raise ValueError(f"Select at least two frames within [0, {FRAMES})")
+    return range(first, stop)
+
+
+def render(folder, backend, width, *, first=0, stop=FRAMES, character="owner", gaze="directed"):
+    shot = frame_range(first, stop)
+    if character != "inspector" and gaze != "directed":
+        raise ValueError("The fixed-gaze comparison needs the painted inspector")
+    pose_at = inspector_pose if character == "inspector" else pose
     start = time.monotonic()
     cpu_start = cpu_seconds()
     deadline = start + 180
     output = OutputSpec(
         width=width,
         height=width * 9 // 16,
-        animation_frame_count=FRAMES,
+        animation_frame_count=len(shot),
         cadence=CadencePolicy(animation_fps=24, delivery_fps=24),
     )
     tools = FFmpegTools.discover().with_content_hashes()
     tools.require()
     settings = {
         "profile": "studio-s1-" + backend,
-        "schema_version": 1,
+        "schema_version": 2,
+        "source_frame_range": [first, stop],
+        "character": character,
+        "gaze": gaze,
         "output": output.model_dump(mode="json"),
         "device": "local CPU",
         "pillow": version("Pillow"),
@@ -130,6 +156,7 @@ def render(folder, backend, width):
                 "owner.svg",
                 "performance.py",
                 "artwork.py",
+                "grip_review.py",
                 "render.py",
                 "godot.gd",
                 "requirements.txt",
@@ -138,21 +165,32 @@ def render(folder, backend, width):
         "encoder_threads": 1,
         "audio": "silent visual acting study",
     }
+    if character == "inspector":
+        for name in (
+            "inspector_art.py",
+            "inspector/expressions.webp",
+            "inspector/coat.webp",
+            "inspector/boot.webp",
+        ):
+            settings["source_sha256"][name] = digest(HERE / name)
     if backend == "godot":
         executable = shutil.which("godot")
         if not executable:
             raise RuntimeError("Godot executable unavailable")
         settings["godot_binary_sha256"] = digest(Path(executable))
-        frames = godot_frames(folder, executable, width, deadline)
+        frames = godot_frames(folder, executable, width, deadline, shot, pose_at, character, gaze)
     else:
         settings["resvg_py"] = version("resvg-py")
-        frames = native_frames(width)
+        frames = native_frames(width, shot, pose_at, character, gaze)
     save(folder / "settings.json", settings)
     partial = folder / "partial.mp4"
     frame_hashes = []
 
+    grip_pixels = []
+
     def observed():
-        for rgb in frames:
+        for frame, (actors, rgb) in zip(shot, frames, strict=True):
+            grip_pixels.append(visible_grips(rgb, width, frame, actors, character))
             frame_hashes.append(hashlib.sha256(rgb).hexdigest())
             yield rgb
 
@@ -180,9 +218,11 @@ def render(folder, backend, width):
         "output_sha256": digest(partial),
         "probe": probe.model_dump(mode="json"),
         "rgb_sha256_by_frame": frame_hashes,
+        "visible_grip_pixels_by_frame": grip_pixels,
+        "source_frame_range": [first, stop],
         "frames": {
-            "authored_source_images": 0,
-            "procedural_from_authored_controls": FRAMES,
+            "authored_source_images": int(character == "inspector"),
+            "procedural_from_authored_controls": len(shot),
             "learned": 0,
             "delivery_duplicates": 0,
         },
@@ -204,13 +244,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", required=True, choices=("godot", "native"))
     parser.add_argument("--width", type=int, choices=(640, 1280), default=1280)
+    parser.add_argument("--character", choices=("owner", "inspector"), default="owner")
+    parser.add_argument("--gaze", choices=("directed", "fixed"), default="directed")
+    parser.add_argument("--start-frame", type=int, default=0)
+    parser.add_argument("--stop-frame", type=int, default=FRAMES, help="Exclusive source frame")
     parser.add_argument("--workspace", type=Path, required=True)
     args = parser.parse_args()
     args.workspace.mkdir(parents=True, exist_ok=True)
     attempt = Path(tempfile.mkdtemp(prefix=args.backend + "-", dir=args.workspace)).resolve()
     print(attempt, flush=True)
     try:
-        render(attempt, args.backend, args.width)
+        render(
+            attempt,
+            args.backend,
+            args.width,
+            first=args.start_frame,
+            stop=args.stop_frame,
+            character=args.character,
+            gaze=args.gaze,
+        )
     except BaseException as exc:
         save(attempt / "failure.json", {"error": type(exc).__name__, "detail": str(exc)})
         raise

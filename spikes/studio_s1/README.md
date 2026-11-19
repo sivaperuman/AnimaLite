@@ -33,3 +33,26 @@ Edit `milo.svg` or `owner.svg` to change the head, torso or shoe. Each named gro
 The Godot experiment drives actual Bone2D chains and the engine’s two-bone IK modifier, then rasterizes the posed vector layers using its CPU image API. The Python comparison solves each chain analytically and streams resvg output. Neither path requires a display, weights, generated stock footage or a video service.
 
 The draft PR includes a [decoded frame sheet](../../docs/verification/studio-s1/contact-sheet.webp), the [four run records](../../docs/verification/studio-s1/runs.json) and the [backend decision](../../docs/decisions/STUDIO-S1-rig-feasibility.md). The shared workspace review player offers the MP4s and raw evidence ZIP. Repository hosting of the videos is pending.
+
+## Review the inspector’s gaze and blueprint grip
+
+![Fixed and directed gaze at 24 fps](../../docs/verification/studio-s1/inspector-gaze.webp)
+
+The right-hand take shows the inspector looking down at the drawing, holding through the reveal and looking across at Milo before the pointing gesture. The left-hand control holds her pupils centered and lids open. Both take the same body, facial expression, prop and camera tracks. The comparison uses source frames 165 through 236, with a common crop around the inspector.
+
+Run these from the repository root. Each command renders just the specified source frames. Use either backend and choose 640 or 1280 pixels wide. Omitting both frame arguments renders the full 288 frames. Frame zero is the beginning of the original shot. The stop is exclusive, and the output contract requires at least two frames.
+
+```sh
+.venv/bin/python spikes/studio_s1/render.py --backend native --character inspector --start-frame 165 --stop-frame 237 --workspace work/s1
+.venv/bin/python spikes/studio_s1/render.py --backend native --character inspector --gaze fixed --start-frame 165 --stop-frame 237 --workspace work/s1
+.venv/bin/python spikes/studio_s1/render.py --backend godot --character inspector --width 640 --start-frame 125 --stop-frame 154 --workspace work/s1
+.venv/bin/python -m pytest -q spikes/studio_s1
+```
+
+The inspector’s three small WebP assets are derived from the original ImageGen model sheet created for this S1 shot. The expression strip contains nine registered drawings in one view, with the painted eyes cleared. The head keeps its expression and angle as the fitted pupils and upper and lower lids move. Edit the eye fits in `inspector_art.py` and the gaze and blink timing in `performance.py`. The coat and boots attach separately to the rig.
+
+Each render projects every supported hand onto the folding blueprint in final image coordinates. Within a ten-stage-pixel radius, it counts the hand’s distinct fill pixels that sit within three stage pixels of visible blueprint fill or outline, scaled for camera zoom and resolution. A missing contact stops the encode and records the source frame and hand in `failure.json`. Successful counts are in `manifest.json` under `visible_grip_pixels_by_frame`, ordered from the recorded start frame. This checks the compositor output immediately before H.264 encoding. A reviewer still judges whether the grasp and the eye movement read at playback speed.
+
+The upstream B5 gaze and B6 handoff workflows informed this implementation. The spike uses AnimaLite’s own code, character artwork and folding-sheet geometry. [Upstream revision](https://github.com/kaomei/stickman-video-director/tree/f59453689af24255aa5989151fc9ab83f4d6357c/skills/directing-stickman-videos)
+
+For a mid-shot preview, Godot replays the preceding IK targets to establish its bone transforms before rasterizing the selected frames. Both backends retain their authored 24 fps cadence. The [measured runs](../../docs/verification/studio-s1/inspector-gaze-runs.json) include the frame-hash comparison against the full shot, visible grip counts, pixel isolation check, timing and memory measurements.

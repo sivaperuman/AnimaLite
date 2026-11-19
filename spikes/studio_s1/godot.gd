@@ -18,7 +18,7 @@ func bone(parent: Node2D, offset: Vector2, length_px: float) -> Bone2D:
 
 func solve(folder: String) -> int:
     var input = JSON.parse_string(FileAccess.get_file_as_string(folder.path_join("targets.json")))
-    if not input is Array or input.size() != 288:
+    if not input is Array or input.size() < 2 or input.size() > 288:
         return ERR_INVALID_DATA
     var skeleton := Skeleton2D.new()
     root.add_child(skeleton)
@@ -61,7 +61,10 @@ func solve(folder: String) -> int:
 
 func raster(folder: String) -> int:
     var img := Image.new()
-    for frame in range(288):
+    var poses = JSON.parse_string(FileAccess.get_file_as_string(folder.path_join("joints.json")))
+    if not poses is Array or poses.size() < 2 or poses.size() > 288:
+        return ERR_INVALID_DATA
+    for frame in range(poses.size()):
         var base := folder.path_join("%03d" % frame)
         var result := img.load_svg_from_string(FileAccess.get_file_as_string(base + ".svg"))
         if result != OK:

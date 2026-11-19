@@ -1,9 +1,9 @@
 """Marvel Engineer blocking in stage pixels (y down), indexed at 24 fps."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
-from math import cos, pi, radians, sin, sqrt
+from math import atan2, cos, degrees, pi, radians, sin, sqrt
 from pathlib import Path
 
 FRAMES = 288
@@ -272,3 +272,74 @@ def camera(frame):
     close = ease(frame, 103, 169) - 0.56 * ease(frame, 207, 240)
     zoom = 1 + 0.77 * close
     return zoom, mix(320, 358, close), mix(180, 207, close)
+
+
+def inspector_pose(frame):
+    """Keep the free wrist on a supported arc as it leaves the unfolding plan."""
+    milo, actor, paper = pose(frame)
+    if frame >= 209:
+        start = pose(209)[1].chains[3]
+        initial = start.tip - start.root
+        final = complex(-37, -19)
+        travel = ease(frame, 209, 239)
+        start_angle = degrees(atan2(initial.imag, initial.real))
+        end_angle = 360 + degrees(atan2(final.imag, final.real))
+        radius = mix(abs(initial), abs(final), travel) + 3 * sin(pi * travel)
+        extension = 5 * (ease(frame, 228, 240) - ease(frame, 240, 251))
+        arm = actor.chains[3]
+        offset = rotate(radius + extension, mix(start_angle, end_angle, travel))
+        actor = replace(actor, chains=(*actor.chains[:3], replace(arm, tip=arm.root + offset)))
+    lead = 1.8 * (ease(frame, 180, 191) - ease(frame, 191, 204))
+    lead -= 3 * (ease(frame, 205, 213) - ease(frame, 213, 226))
+    settle = 2 * (ease(frame, 225, 237) - ease(frame, 237, 251))
+    return (
+        milo,
+        replace(
+            actor,
+            angle=actor.angle + lead + settle,
+            face=actor.face + complex(lead * 0.32, settle * 0.32),
+        ),
+        paper,
+    )
+
+
+def inspector_eyes(frame):
+    """Head-local gaze (-1..1 on each axis) and lid openness (0..1)."""
+    # Track the fold briefly, fix on the roof, then look at Milo before recoiling.
+    x = track(
+        frame,
+        (0, -0.72),
+        (114, -0.72),
+        (120, -0.15),
+        (169, -0.15),
+        (177, 0.14),
+        (197, 0.14),
+        (201, -0.94),
+    )
+    y = track(
+        frame,
+        (0, -0.23),
+        (114, -0.23),
+        (120, 0.65),
+        (169, 0.65),
+        (177, 0.98),
+        (197, 0.98),
+        (201, -0.12),
+    )
+    return x, y, blink(frame, 48, 103, 167, 243, 278)
+
+
+def supported_grips(frame, paper):
+    """Independent world-space targets for each hand carrying the folding sheet."""
+    grips = {}
+    if frame <= 130:
+        grips["milo", 0] = paper.right
+    if frame <= 148:
+        grips["milo", 1] = paper.left
+    if frame >= 143:
+        grips["owner", 0] = paper.left
+    if 130 <= frame <= 209:
+        grips["owner", 1] = mix(
+            paper.right, paper.point(paper.half_width - 2, 12), ease(frame, 150, 178)
+        )
+    return grips
