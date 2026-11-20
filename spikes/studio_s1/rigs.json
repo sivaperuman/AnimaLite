@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "units": "stage pixels, positive y down",
+  "milo": {
+    "head_from_shoulder": 28,
+    "chains": [
+      {"name": "far leg", "root": "hip", "offset_x": -4, "upper": 31, "lower": 32, "bend": -1},
+      {"name": "near leg", "root": "hip", "offset_x": 4, "upper": 32, "lower": 32, "bend": -1},
+      {"name": "far arm", "root": "shoulder", "offset_x": 6, "upper": 32, "lower": 34, "bend": 1},
+      {"name": "near arm", "root": "shoulder", "offset_x": -6, "upper": 32, "lower": 34, "bend": 1}
+    ]
+  },
+  "owner": {
+    "head_from_shoulder": 28,
+    "chains": [
+      {"name": "far leg", "root": "hip", "offset_x": 5, "upper": 31, "lower": 32, "bend": 1},
+      {"name": "near leg", "root": "hip", "offset_x": -4, "upper": 32, "lower": 32, "bend": 1},
+      {"name": "far arm", "root": "shoulder", "offset_x": -8, "upper": 37, "lower": 38, "bend": -1},
+      {"name": "near arm", "root": "shoulder", "offset_x": 7, "upper": 34, "lower": 35, "bend": -1}
+    ]
+  }
+}
