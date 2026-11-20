@@ -56,3 +56,23 @@ Each render projects every supported hand onto the folding blueprint in final im
 The upstream B5 gaze and B6 handoff workflows informed this implementation. The spike uses AnimaLite’s own code, character artwork and folding-sheet geometry. [Upstream revision](https://github.com/kaomei/stickman-video-director/tree/f59453689af24255aa5989151fc9ab83f4d6357c/skills/directing-stickman-videos)
 
 For a mid-shot preview, Godot replays the preceding IK targets to establish its bone transforms before rasterizing the selected frames. Both backends retain their authored 24 fps cadence. The [measured runs](../../docs/verification/studio-s1/inspector-gaze-runs.json) include the frame-hash comparison against the full shot, visible grip counts, pixel isolation check, timing and memory measurements.
+
+## Review the encoded take
+
+Every S1 render now saves `review.webp` and `review.json` beside the MP4. Open the sheet to see the foot plant, shared grip, blueprint reveal and pointing gesture in the delivered picture. Range previews use the same source frame numbers as the full shot. The sheet includes both range endpoints, relevant acting beats and up to four flagged frames. The JSON lists all findings with an inclusive start and exclusive stop. The manifest binds the sheet, report and MP4 by SHA-256. [Example sheet from the 12-second inspector take](../../docs/verification/studio-s1/inspector-take-review.webp)
+
+The review decodes every frame at 64 × 36 luma and samples selected color frames from the encoded clip. It marks six or more nearly black frames, at least 24 nearly stationary frames and isolated large picture changes. These are playback cues for this lit, single-shot scene. Small pupil movements can disappear at this resolution, and an intentional comic hold can trigger a stillness finding. Clip length and decode failures remain errors. The dedicated grip and eye tests cover their own signals.
+
+### FreeVideo verification
+
+At upstream commit `225997487d52a873882183245c594e3b0249a3d6`, we executed FreeVideo’s finished-take checker on the actual 72-frame inspector clip using PyAV 18.1.0. Its contact-sheet helper returned decoded frames 0, 14, 28, 43, 57 and 71. The checker reported no picture problems and flagged the missing audio track on our intentionally silent clip. On a controlled copy with a white first frame, 12 black frames and a 40-frame repeated tail, it reported an opening flicker, black picture at 0.42–0.88 s and a freeze at 1.29–2.96 s. AnimaLite independently implements visual review with its existing supervised FFmpeg path and acting timeline. [Upstream take checker](https://github.com/FlashML-org/FreeVideo/blob/225997487d52a873882183245c594e3b0249a3d6/freevideo_engine/agent/take_qa.py) · [Upstream contact sheet](https://github.com/FlashML-org/FreeVideo/blob/225997487d52a873882183245c594e3b0249a3d6/freevideo_engine/agent/media.py#L158)
+
+FreeVideo routes H3 inference to CUDA or Apple MPS. A direct call to its backend selector with `cpu` raised `ValueError`. We did not run H3 generation or verify its advertised minimum VRAM. FreeVideo licenses its code under Apache-2.0 and identifies the separate MiniMax H3 Community License for weights. The S1 implementation uses neither FreeVideo code nor model weights. [Backend selector](https://github.com/FlashML-org/FreeVideo/blob/225997487d52a873882183245c594e3b0249a3d6/freevideo_engine/backends/__init__.py) · [Upstream notice](https://github.com/FlashML-org/FreeVideo/blob/225997487d52a873882183245c594e3b0249a3d6/NOTICE)
+
+| Local S1 run | Decoded frames | Added review time | Picture findings |
+| --- | ---: | ---: | --- |
+| Godot, 1280 × 720, full shot | 288 | 1.07 s | Near-still source frames 263–287 during the closing pose |
+| Native, 1280 × 720, frames 165–236 | 72 | 0.56 s | None |
+| Same native take, controlled defects | 72 | — | Opening jump at 165, black from 175 through 186, near-still from 196 through 236 |
+
+The two clean MP4s matched the corresponding earlier S1 deliveries byte for byte. The final 25 full-shot source frames had distinct RGB hashes. Review time covers the two FFmpeg decode passes, analysis, sheet and report writing, and hashing the encoded take on the Codex Cloud development host.

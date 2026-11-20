@@ -18,6 +18,7 @@ from artwork import HERE, svg
 from grip_review import visible_grips
 from performance import FRAMES, inspector_pose, pose
 from PIL import Image
+from take_review import decoded_review
 
 from animalite.contracts.media import CadencePolicy, OutputSpec
 from animalite.contracts.profile import ThreadBudget
@@ -158,6 +159,7 @@ def render(folder, backend, width, *, first=0, stop=FRAMES, character="owner", g
                 "artwork.py",
                 "grip_review.py",
                 "render.py",
+                "take_review.py",
                 "godot.gd",
                 "requirements.txt",
             )
@@ -211,11 +213,19 @@ def render(folder, backend, width, *, first=0, stop=FRAMES, character="owner", g
         raise RuntimeError(f"Invalid clip {probe} {problems}")
     wall = time.monotonic() - start
     cpu = cpu_seconds() - cpu_start
+    review_start = time.monotonic()
+    review = decoded_review(tools.ffmpeg_path, partial, shot, folder / "review.webp", deadline)
+    output_hash = digest(partial)
+    save(folder / "review.json", {**review, "output_sha256": output_hash})
+    review_seconds = time.monotonic() - review_start
     scratch = folder / "scratch"
     scratch_bytes = sum(p.stat().st_size for p in scratch.rglob("*") if p.is_file())
     record = {
         "settings_sha256": digest(folder / "settings.json"),
-        "output_sha256": digest(partial),
+        "output_sha256": output_hash,
+        "decoded_review_seconds": review_seconds,
+        "review_sha256": digest(folder / "review.json"),
+        "review_sheet_sha256": digest(folder / "review.webp"),
         "probe": probe.model_dump(mode="json"),
         "rgb_sha256_by_frame": frame_hashes,
         "visible_grip_pixels_by_frame": grip_pixels,
