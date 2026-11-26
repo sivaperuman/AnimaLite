@@ -223,7 +223,47 @@ With the classical renderer, optional `ease-in-out` timing starts and lands each
 movement gently. Omit it for linear timing.
 
 The command fits images into 640×360 without stretching, renders each shot
-through the execution service and joins them with hard cuts into one silent
+through the execution service and joins them with hard cuts into one
 24 fps H.264 MP4. Paths are resolved relative to the storyboard. The baseline
 warps and blends input poses; it can ghost on large changes. Image creation is
 performed by ChatGPT in the session. The standalone CLI takes local artwork.
+
+### Camera and character voices
+
+Set a shot's `camera.angle` to the viewpoint you want, such as “eye-level
+medium shot of Max” or “over Max's shoulder toward Milo on the bicycle”.
+ChatGPT draws the poses from that viewpoint. Start a new shot and generate
+its poses when changing angle. The renderer operates on 2D artwork.
+Zoom is animated at 24 fps: use 1.0 for the whole frame or up to 4.0 for a
+tighter crop. A larger ending value pushes in; a smaller one pulls back.
+Set `focus_x` and `focus_y` between 0 and 1 to anchor the move near a face
+or prop (0.5, 0.5 by default).
+
+Assign recurring English voices at storyboard level. Each shot may include
+dialogue timed in milliseconds from the start of that shot:
+
+```json
+{
+  "story": "Max notices who is cycling beside the bus.",
+  "voices": {"Max": "rms", "Milo": "awb"},
+  "shots": [{
+    "seconds": 4,
+    "action": "Max spots the driver and stops punching tickets.",
+    "camera": {"angle": "eye-level medium shot", "zoom_start": 1, "zoom_end": 1.4,
+               "focus_x": 0.35, "focus_y": 0.4},
+    "poses": [{"frame": 0, "image": "max-start.png"}, {"frame": 47, "image": "max-end.png"}],
+    "dialogue": [{"character": "Max", "start_ms": 450, "text": "Who's driving?"}]
+  }]
+}
+```
+
+Text uses FFmpeg's optional offline Flite filter (voices `awb`, `rms`, `slt`,
+`kal`, `kal16`); the installed FFmpeg build must include the chosen voice.
+For a recorded performance, another language, or a preferred TTS provider,
+supply a local WAV, MP3 or FLAC with `{"character":"Milo","start_ms":500,
+"audio":"voices/milo.wav"}`. Recorded lines need no voice assignment. If both
+text and audio are supplied, the recording is used. Silence and overlapping
+lines follow the timeline. A line that overruns a cut is reported with its shot
+and character. The output includes one mono AAC track when dialogue is present.
+Lip animation still comes from the supplied poses. Runs retain normalized voice
+recordings for replay.

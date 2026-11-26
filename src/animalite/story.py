@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import wave
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import Literal
@@ -18,7 +19,16 @@ from animalite.contracts.shot import ShotIntent
 from animalite.core.service import LocalExecutionService
 from animalite.errors import ValidationRejected
 from animalite.media.probe import probe_output, validate_output
-from animalite.proc import run_capture
+from animalite.story_media import (
+    AUDIO_RATE,
+    Camera,
+    Dialogue,
+    Voice,
+    ffmpeg,
+    frame_shot,
+    mix_shot,
+    verify_dialogue,
+)
 
 
 class Pose(Contract):
@@ -30,6 +40,8 @@ class StoryShot(Contract):
     action: str = Field(min_length=1)
     seconds: int = Field(ge=1, le=6)
     timing: Literal["linear", "ease-in-out"] = "linear"
+    camera: Camera = Camera()
+    dialogue: list[Dialogue] = Field(default_factory=list)
     poses: list[Pose] = Field(min_length=2, max_length=4)
 
     @model_validator(mode="after")
@@ -38,20 +50,23 @@ class StoryShot(Contract):
         end = self.seconds * P_L_FINAL_OUTPUT.cadence.animation_fps - 1
         if frames != sorted(set(frames)) or frames[0] != 0 or frames[-1] != end:
             raise ValueError(f"pose frames must increase strictly from 0 to {end}")
+        if any(line.start_ms >= self.seconds * 1000 for line in self.dialogue):
+            raise ValueError("dialogue must start within its shot")
         return self
 
 
 class Storyboard(Document):
     story: str = Field(min_length=1)
+    voices: dict[str, Voice] = Field(default_factory=dict)
     shots: list[StoryShot] = Field(min_length=1)
 
-
-def _ffmpeg(binary: str, args: list[str]) -> None:
-    result = run_capture([binary, "-nostdin", "-loglevel", "error", *args], timeout=120.0)
-    if result.returncode or result.survivors:
-        raise ValidationRejected(
-            f"story media step failed: {result.stderr.decode(errors='replace')}"
-        )
+    @model_validator(mode="after")
+    def require_cast_voices(self) -> Storyboard:
+        for shot in self.shots:
+            for line in shot.dialogue:
+                if line.audio is None and line.character not in self.voices:
+                    raise ValueError(f"no voice assigned to {line.character!r}")
+        return self
 
 
 def render_story(manifest: Path, workspace: Path, profile: str, purpose: AdmissionPurpose) -> Path:
@@ -74,7 +89,7 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
             if decoder is None or not source.is_file():
                 raise ValidationRejected(f"expected a PNG, JPEG, or WebP still: {source}")
             dest = run / f"shot-{number}-pose-{pose.frame}.png"
-            _ffmpeg(
+            ffmpeg(
                 binary,
                 [
                     "-f",
@@ -122,6 +137,7 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
                 shot_code=f"shot-{number}",
                 target_duration_seconds=shot.seconds,
                 motion_description=shot.action,
+                camera=shot.camera.angle,
             ),
             controls={"timing": shot.timing} if shot.timing != "linear" else {},
             anchors=AnchorSet(anchors=anchors),
@@ -132,8 +148,44 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
             raise ValidationRejected(
                 f"shot {number} failed ({result.attempt_id}): {result.failure}"
             )
-        clip = Path(result.output.path).relative_to(run)
+        clip = frame_shot(
+            binary,
+            Path(result.output.path),
+            run / f"camera-{number}.mp4",
+            shot.camera,
+            shot.seconds,
+        ).relative_to(run)
         playlist.append(f"file '{clip.as_posix()}'")
+    audio_args: list[str] = []
+    has_dialogue = any(shot.dialogue for shot in board.shots)
+    if has_dialogue:
+        soundtrack = run / "dialogue.wav"
+        with wave.open(str(soundtrack), "wb") as track:
+            track.setparams((1, 2, AUDIO_RATE, 0, "NONE", "not compressed"))
+            for number, shot in enumerate(prepared_shots, 1):
+                lines = mix_shot(
+                    service.tools,
+                    manifest.parent,
+                    run,
+                    number,
+                    shot.seconds,
+                    shot.dialogue,
+                    board.voices,
+                    track,
+                )
+                prepared_shots[number - 1] = shot.model_copy(update={"dialogue": lines})
+        audio_args = [
+            "-i",
+            str(soundtrack),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+        ]
     (run / "storyboard.json").write_text(
         board.model_copy(update={"shots": prepared_shots}).model_dump_json(indent=2),
         encoding="utf-8",
@@ -141,7 +193,7 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
     listing = run / "shots.ffconcat"
     listing.write_text("\n".join(playlist) + "\n", encoding="utf-8")
     pending = run / "unverified.mp4"
-    _ffmpeg(
+    ffmpeg(
         binary,
         [
             "-f",
@@ -150,7 +202,8 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
             "1",
             "-i",
             str(listing),
-            "-c",
+            *audio_args,
+            "-c:v",
             "copy",
             "-movflags",
             "+faststart",
@@ -163,4 +216,6 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
     issues = validate_output(probe_output(service.tools, pending), expected)
     if issues:
         raise ValidationRejected("; ".join(issues))
+    if has_dialogue:
+        verify_dialogue(service.tools, pending, sum(shot.seconds for shot in board.shots))
     return pending.rename(run / "story.mp4")

@@ -159,3 +159,8 @@ In a ChatGPT development session, treat a story-to-video request as an end-to-en
 render request. Follow the **Story to video in ChatGPT** section of README.md.
 ChatGPT directs the shots and generates the actual image assets using the active
 image generator; AnimaLite handles motion between those poses and final assembly.
+
+Use each camera angle when prompting the image generator for that shot. A real
+viewpoint change needs new artwork. Use the storyboard's camera zoom for moves
+within a view. For spoken scenes, cast each character once, schedule their lines,
+and check the final soundtrack with the picture. Respect a silent-story brief.
