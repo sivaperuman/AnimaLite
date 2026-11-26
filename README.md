@@ -233,7 +233,8 @@ performed by ChatGPT in the session. The standalone CLI takes local artwork.
 Set a shot's `camera.angle` to the viewpoint you want, such as “eye-level
 medium shot of Max” or “over Max's shoulder toward Milo on the bicycle”.
 ChatGPT draws the poses from that viewpoint. Start a new shot and generate
-its poses when changing angle. The renderer operates on 2D artwork.
+its poses when changing angle in an illustrated shot. For a continuous orbit,
+use a 3D stage as described below.
 Zoom is animated at 24 fps: use 1.0 for the whole frame or up to 4.0 for a
 tighter crop. A larger ending value pushes in; a smaller one pulls back.
 Set `focus_x` and `focus_y` between 0 and 1 to anchor the move near a face
@@ -265,5 +266,48 @@ supply a local WAV, MP3 or FLAC with `{"character":"Milo","start_ms":500,
 text and audio are supplied, the recording is used. Silence and overlapping
 lines follow the timeline. A line that overruns a cut is reported with its shot
 and character. The output includes one mono AAC track when dialogue is present.
-Lip animation still comes from the supplied poses. Runs retain normalized voice
-recordings for replay.
+Runs retain normalized voice recordings for replay.
+
+### Automatic lip sync and continuous 3D rotation
+
+Try the included two-character scene from an AnimaLite checkout:
+
+```sh
+python -m animalite story-render examples/orbit-dialogue.json --profile classical-warp-baseline
+```
+
+The example uses Blender 4.3+ (the `blender` executable on PATH) and FFmpeg
+with Flite. It renders a stationary dialogue shot and then a complete camera
+orbit with two separately timed voices. On the built-in stage, each named
+actor has its own mouth rig. Supply dialogue as text or recorded audio as above.
+AnimaLite measures each speaker's isolated WAV at 24 fps and uses loudness and
+spectral bands to estimate jaw opening, rounding and spreading. Silence returns
+that character to rest; overlapping speakers animate independently. This is
+acoustic animation rather than a phoneme-alignment or face-detection model.
+
+**Illustrated shots.** Ask the image generator to leave a clean mouth area in
+each pose. In that shot set e.g. `"mouths": {"Max": {"at": [0.38, 0.54],
+"end": [0.39, 0.54], "width_px": 22, "ink": "#382531"}}`. Supply the center
+of the mouth on the padded 640×360 canvas in normalized coordinates.
+The optional end point follows linear head motion. Use a new shot for complex
+head turns. FFmpeg with libass draws the mouth before zoom; existing storyboards
+without a mouth rig retain their drawn expressions. Omit a mouth for an offscreen
+speaker. No per-word or per-frame mouth keys are required.
+
+**3D shots.** Replace the shot's `poses` with `stage`. Use named `actors`
+for the built-in stick figures or point `model` at a self-contained GLB 2.0
+scene. For an imported speaking character, set e.g.
+`"bindings": {"Max": "MaxFace"}`; that mesh needs the relative shape keys
+`AL_open`, `AL_round`, and `AL_wide`. The stage uses Blender's solid-material
+Workbench renderer. It renders actual meshes with occlusion and parallax.
+For exact character or set designs, provide their geometry and material colors.
+Generated flat artwork alone supplies no back or side geometry.
+
+`orbit.target` is a Blender-world XYZ look-at point (Z up); `radius` uses scene
+units. The `yaw`, `pitch` and `roll` pairs are start/end angles in degrees.
+Yaw starts on the negative Y axis. Use `[0, 360]` for a continuous revolution,
+`[30, -60]` to reverse direction, or matching values for a fixed angle.
+Interpolation follows the specified angular travel at every delivery frame.
+Use `camera.zoom_start/end` for a lens change during the orbit.
+Each stage shot renders its 1–6 seconds at 640×360 and 24 fps;
+staged and illustrated shots can share a storyboard. Blender is needed only for stage shots.

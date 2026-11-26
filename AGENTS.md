@@ -164,3 +164,7 @@ Use each camera angle when prompting the image generator for that shot. A real
 viewpoint change needs new artwork. Use the storyboard's camera zoom for moves
 within a view. For spoken scenes, cast each character once, schedule their lines,
 and check the final soundtrack with the picture. Respect a silent-story brief.
+
+For dialogue, use built-in stage actor names, imported face bindings, or place
+a 2D mouth on clean generated keyframes. For continuous rotation, choose a 3D
+stage and supply the orbit angles. Keep flat keyframes for illustrated cuts.

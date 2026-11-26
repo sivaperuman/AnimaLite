@@ -19,6 +19,7 @@ from animalite.contracts.shot import ShotIntent
 from animalite.core.service import LocalExecutionService
 from animalite.errors import ValidationRejected
 from animalite.media.probe import probe_output, validate_output
+from animalite.performance import Mouth, Stage, draw_mouths, render_stage, speech_cues
 from animalite.story_media import (
     AUDIO_RATE,
     Camera,
@@ -42,13 +43,24 @@ class StoryShot(Contract):
     timing: Literal["linear", "ease-in-out"] = "linear"
     camera: Camera = Camera()
     dialogue: list[Dialogue] = Field(default_factory=list)
-    poses: list[Pose] = Field(min_length=2, max_length=4)
+    poses: list[Pose] = Field(default_factory=list, max_length=4)
+    stage: Stage | None = None
+    mouths: dict[str, Mouth] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def check_timing(self) -> StoryShot:
         frames = [pose.frame for pose in self.poses]
         end = self.seconds * P_L_FINAL_OUTPUT.cadence.animation_fps - 1
-        if frames != sorted(set(frames)) or frames[0] != 0 or frames[-1] != end:
+        if self.stage:
+            if self.poses or self.mouths:
+                raise ValueError(
+                    "3D stage shots use geometry and mesh mouths; omit poses and mouths"
+                )
+            if (self.camera.focus_x, self.camera.focus_y) != (0.5, 0.5):
+                raise ValueError("use orbit.target to aim the 3D camera")
+        elif (
+            len(frames) < 2 or frames != sorted(set(frames)) or frames[0] != 0 or frames[-1] != end
+        ):
             raise ValueError(f"pose frames must increase strictly from 0 to {end}")
         if any(line.start_ms >= self.seconds * 1000 for line in self.dialogue):
             raise ValueError("dialogue must start within its shot")
@@ -78,7 +90,46 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
     service = LocalExecutionService(run / "jobs")
     binary = service.tools.ffmpeg_path
     playlist: list[str] = []
-    for number, shot in enumerate(board.shots, 1):
+    voiced_shots: list[StoryShot] = []
+    audio_args: list[str] = []
+    has_dialogue = any(shot.dialogue for shot in board.shots)
+    if has_dialogue:
+        soundtrack = run / "dialogue.wav"
+        with wave.open(str(soundtrack), "wb") as track:
+            track.setparams((1, 2, AUDIO_RATE, 0, "NONE", "not compressed"))
+            for number, shot in enumerate(board.shots, 1):
+                lines = mix_shot(
+                    service.tools,
+                    manifest.parent,
+                    run,
+                    number,
+                    shot.seconds,
+                    shot.dialogue,
+                    board.voices,
+                    track,
+                )
+                voiced_shots.append(shot.model_copy(update={"dialogue": lines}))
+        audio_args = [
+            "-i",
+            str(soundtrack),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+        ]
+    for number, shot in enumerate(voiced_shots if has_dialogue else board.shots, 1):
+        cues = speech_cues(run, shot.dialogue, shot.seconds) if shot.mouths or shot.stage else {}
+        if shot.stage is not None:
+            video, stage = render_stage(
+                binary, shot.stage, shot.camera, shot.seconds, manifest.parent, run, number, cues
+            )
+            prepared_shots.append(shot.model_copy(update={"stage": stage}))
+            playlist.append(f"file '{video.relative_to(run).as_posix()}'")
+            continue
         anchors = []
         prepared_poses: list[Pose] = []
         for pose in shot.poses:
@@ -148,44 +199,17 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
             raise ValidationRejected(
                 f"shot {number} failed ({result.attempt_id}): {result.failure}"
             )
+        video = Path(result.output.path)
+        if shot.mouths:
+            video = draw_mouths(binary, video, run, number, shot.seconds, shot.mouths, cues)
         clip = frame_shot(
             binary,
-            Path(result.output.path),
+            video,
             run / f"camera-{number}.mp4",
             shot.camera,
             shot.seconds,
         ).relative_to(run)
         playlist.append(f"file '{clip.as_posix()}'")
-    audio_args: list[str] = []
-    has_dialogue = any(shot.dialogue for shot in board.shots)
-    if has_dialogue:
-        soundtrack = run / "dialogue.wav"
-        with wave.open(str(soundtrack), "wb") as track:
-            track.setparams((1, 2, AUDIO_RATE, 0, "NONE", "not compressed"))
-            for number, shot in enumerate(prepared_shots, 1):
-                lines = mix_shot(
-                    service.tools,
-                    manifest.parent,
-                    run,
-                    number,
-                    shot.seconds,
-                    shot.dialogue,
-                    board.voices,
-                    track,
-                )
-                prepared_shots[number - 1] = shot.model_copy(update={"dialogue": lines})
-        audio_args = [
-            "-i",
-            str(soundtrack),
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-        ]
     (run / "storyboard.json").write_text(
         board.model_copy(update={"shots": prepared_shots}).model_dump_json(indent=2),
         encoding="utf-8",
@@ -211,7 +235,11 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
         ],
     )
     expected = P_L_FINAL_OUTPUT.model_copy(
-        update={"animation_frame_count": sum(shot.poses[-1].frame + 1 for shot in board.shots)}
+        update={
+            "animation_frame_count": sum(
+                shot.seconds * P_L_FINAL_OUTPUT.cadence.animation_fps for shot in board.shots
+            )
+        }
     )
     issues = validate_output(probe_output(service.tools, pending), expected)
     if issues:
