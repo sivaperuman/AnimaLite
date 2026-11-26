@@ -178,3 +178,52 @@ The copyright-holder name in [`NOTICE`](NOTICE) is an open metadata item
 Engineering and review instructions live in [`AGENTS.md`](AGENTS.md);
 [`CLAUDE.md`](CLAUDE.md) imports them. Durable implementation decisions are
 recorded in [`docs/decisions/`](docs/decisions/).
+
+## Story to video in ChatGPT
+
+With this checkout and an image-generation tool available, ask: “Animate this
+story with AnimaLite: Max punches a ticket, looks out of the bus, and recognizes
+the driver riding a bicycle.” The development session performs the following steps:
+
+1. Break the story into ordered shots of 1–6 whole seconds. Pick one camera setup
+   per shot and describe the action and its payoff. Match any supplied characters
+   and references. For a one-minute request, budget exactly 60 seconds across shots.
+2. Generate the actual opening and ending images for each shot in ChatGPT. Use
+   the opening image as the visual reference for later poses. Add up to two
+   intermediate poses where anticipation, contact or a reaction matters. Keep
+   the camera and background registered. Generate new artwork for new shots.
+   Save the selected PNG, JPEG or WebP stills alongside the storyboard. If the
+   session cannot generate images, report that dependency or use supplied stills.
+3. Write a storyboard such as the one below. Frame indices use the 12 fps
+   animation timeline. Repeat an image at two indices for a held pose.
+4. Run the command and deliver the printed MP4 path. Each run retains the
+   shot attempts in its own directory. Check the result visually before delivery.
+
+```json
+{
+  "story": "Max punches a ticket and spots the driver outside.",
+  "shots": [{
+    "action": "Max holds the ticket still, then looks out the window.",
+    "seconds": 3,
+    "timing": "ease-in-out",
+    "poses": [
+      {"frame": 0, "image": "max-start.png"},
+      {"frame": 15, "image": "max-start.png"},
+      {"frame": 35, "image": "max-reaction.png"}
+    ]
+  }]
+}
+```
+
+```bash
+python -m animalite story-render storyboard.json --profile classical-warp-baseline
+```
+
+With the classical renderer, optional `ease-in-out` timing starts and lands each
+movement gently. Omit it for linear timing.
+
+The command fits images into 640×360 without stretching, renders each shot
+through the execution service and joins them with hard cuts into one silent
+24 fps H.264 MP4. Paths are resolved relative to the storyboard. The baseline
+warps and blends input poses; it can ghost on large changes. Image creation is
+performed by ChatGPT in the session. The standalone CLI takes local artwork.

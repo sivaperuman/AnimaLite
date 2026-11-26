@@ -24,6 +24,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from animalite import __version__
 from animalite.adapters.registry import Registry, default_registry
 from animalite.adapters.rife_ncnn import RIFE_PROFILE
@@ -53,6 +55,7 @@ from animalite.errors import AnimaLiteError, ValidationRejected
 from animalite.fixtures.generator import FIXTURE_CLIPS, generate_clip, write_anchor_set
 from animalite.hostinfo.inventory import collect_inventory
 from animalite.media.ffmpeg import FFmpegTools
+from animalite.story import render_story
 
 __all__ = ["build_parser", "main"]
 
@@ -233,6 +236,17 @@ def cmd_render(args: argparse.Namespace) -> int:
         )
     _note(_non_qualifying_banner(request.engine_profile_id, _registry()))
     return EXIT_OK if record.state is JobState.SUCCEEDED else EXIT_ERROR
+
+
+def cmd_story_render(args: argparse.Namespace) -> int:
+    try:
+        movie = render_story(
+            args.storyboard, args.workspace, args.profile, AdmissionPurpose(args.purpose)
+        )
+    except (ValidationError, OSError) as exc:
+        raise ValidationRejected(str(exc)) from exc
+    print(movie)
+    return EXIT_OK
 
 
 def cmd_runtime_status(args: argparse.Namespace) -> int:
@@ -862,6 +876,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--retry-of", default=None, help="parent attempt id; a retry creates a new attempt"
     )
     render.set_defaults(func=cmd_render)
+
+    story = sub.add_parser("story-render", help="render generated story poses and join shots")
+    story.add_argument("storyboard", type=Path)
+    story.add_argument("--workspace", type=Path, default=Path("work/stories"))
+    story.add_argument("--profile", required=True)
+    story.add_argument(
+        "--purpose", choices=[p.value for p in AdmissionPurpose], default="production"
+    )
+    story.set_defaults(func=cmd_story_render)
 
     fixtures = sub.add_parser("fixtures", help="reproducible synthetic fixtures")
     fixtures_sub = fixtures.add_subparsers(dest="fixtures_command", required=True)

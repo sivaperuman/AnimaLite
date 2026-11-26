@@ -233,6 +233,7 @@ def test_validation_warns_that_the_comparator_is_a_baseline(tmp_path):
         # float(10**1000) raises OverflowError; it escaped validation entirely.
         ({"search_radius": 10**1000}, CodeVAL.CONTROL_VALUE_INVALID),
         ({"accept_margin": -0.5}, CodeVAL.CONTROL_VALUE_INVALID),
+        ({"timing": "bounce"}, CodeVAL.CONTROL_VALUE_INVALID),
         ({"unknown_knob": 1}, CodeVAL.CONTROL_UNSUPPORTED),
     ],
 )
@@ -250,6 +251,35 @@ def test_invalid_comparator_controls_are_rejected_before_execution(tmp_path, con
     )
     assert not report.valid
     assert expected in report.error_codes
+
+
+def test_eased_motion_preserves_endpoints_and_slows_the_start(tmp_path):
+    anchors = AnchorSet(
+        anchors=[synthetic_anchor(tmp_path, animation_index=i, anchor_id=str(i)) for i in (0, 4)]
+    )
+    first = np.zeros((32, 32, 3), dtype=np.uint8)
+    last = np.full_like(first, 240)
+
+    def synthesize(timing):
+        context = AdapterContext(
+            anchor_frames={0: first, 4: last},
+            output=P_L_FINAL_OUTPUT.model_copy(
+                update={"width": 32, "height": 32, "animation_frame_count": 5}
+            ),
+            anchors=anchors,
+            profile=CLASSICAL_WARP_PROFILE,
+            scratch_dir=tmp_path,
+            tools=TOOLS,
+            controls=timing,
+        )
+        return list(ClassicalWarpAdapter().synthesize(context))
+
+    eased = synthesize({"timing": "ease-in-out"})
+    linear = synthesize({})
+    assert np.array_equal(eased[0], first)
+    assert np.array_equal(eased[-1], last)
+    assert eased[1].mean() < linear[1].mean()
+    assert eased[3].mean() > linear[3].mean()
 
 
 def test_a_bad_control_reaching_synthesis_directly_is_an_adapter_error(tmp_path):

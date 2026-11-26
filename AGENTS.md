@@ -152,3 +152,10 @@ with rights records, two named quality reviewers, and a signed-off licence
 disposition for the model weights (DEC-0013). Until those exist the benchmark
 evaluator refuses a qualifying verdict, and it is the component that decides —
 not a render.
+
+## When the user supplies a story for animation
+
+In a ChatGPT development session, treat a story-to-video request as an end-to-end
+render request. Follow the **Story to video in ChatGPT** section of README.md.
+ChatGPT directs the shots and generates the actual image assets using the active
+image generator; AnimaLite handles motion between those poses and final assembly.

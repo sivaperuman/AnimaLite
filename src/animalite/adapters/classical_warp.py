@@ -68,7 +68,7 @@ NON_QUALIFYING_REASON = (
     "establish what a non-learned baseline already achieves on the same clips."
 )
 
-_SUPPORTED_CONTROLS = ("block_size", "search_radius", "accept_margin")
+_SUPPORTED_CONTROLS = ("block_size", "search_radius", "accept_margin", "timing")
 
 #: Bounds are engineering limits, not tuned thresholds. Block size need NOT
 #: divide the output: 16 does not divide 360, and the estimator covers whole
@@ -149,6 +149,12 @@ def _validate_controls(
                 )
             )
             continue
+        if name == "timing":
+            if value not in ("linear", "ease-in-out"):
+                issues.append(
+                    invalid(name, f"unsupported timing {value!r}", "Use linear or ease-in-out.")
+                )
+            continue
         try:
             numeric = _coerce_numeric(value, name, integral=name in _INTEGRAL_CONTROLS)
         except AdapterError as exc:
@@ -198,7 +204,7 @@ def _validate_controls(
 CLASSICAL_WARP_PROFILE = EngineProfile(
     profile_id="classical-warp-baseline",
     display_name="Classical block-matching warp comparator (NON-LEARNED, NON-QUALIFYING)",
-    revision=1,
+    revision=2,
     adapter_key=CLASSICAL_ADAPTER_KEY,
     engine_class=EngineClass.DETERMINISTIC,
     learned_temporal_participation=False,
@@ -382,6 +388,8 @@ class ClassicalWarpAdapter:
 
             assert forward is not None and backward is not None  # set with cached_pair
             timestep = (frame_index - left_idx) / (right_idx - left_idx)
+            if params.get("timing") == "ease-in-out":
+                timestep = timestep * timestep * (3 - 2 * timestep)
             yield interpolate_motion_compensated(
                 left, right, timestep, forward, backward, block_size=block_size
             )
