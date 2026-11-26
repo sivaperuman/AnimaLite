@@ -7,7 +7,7 @@ import shutil
 import struct
 import wave
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -34,11 +34,47 @@ class Mouth(Contract):
     ink: Color = "#372630"
 
 
+SignedUnit = Annotated[float, Field(ge=-1, le=1)]
+Distance = Annotated[float, Field(gt=0.05, le=1000)]
+
+
+class ActingPose(Contract):
+    at: Unit
+    head_turn: SignedUnit = 0
+    head_tilt: SignedUnit = 0
+    gaze: SignedUnit = 0
+    brow: SignedUnit = 0
+    smile: SignedUnit = 0
+    blink: Unit = 0
+    raise_hand: Unit = 0
+    squash: SignedUnit = 0
+
+
+class Cinema(Contract):
+    samples: int = Field(default=12, ge=1, le=128)
+    lighting: Literal["daylight", "sunset"] = "daylight"
+    set: Literal["studio", "workshop", "asset"] = "studio"
+    focus_distance: tuple[Distance, Distance] | None = None
+    f_stop: float = Field(default=2.8, ge=0.7, le=32)
+    shutter: Unit = 0
+    ease_camera: bool = True
+    denoise: bool = True
+
+
 class Actor(Contract):
     x: FiniteFloat = 0
     y: FiniteFloat = 0
     skin: Color = "#94B979"
     shirt: Color = "#E69345"
+    costume: Literal["cap", "forelock"] = "forelock"
+    acting: list[ActingPose] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def ordered_poses(self) -> Actor:
+        times = [pose.at for pose in self.acting]
+        if times != sorted(set(times)):
+            raise ValueError("acting pose times must increase strictly")
+        return self
 
 
 class Orbit(Contract):
@@ -53,6 +89,7 @@ class Orbit(Contract):
 
 class Stage(Contract):
     orbit: Orbit = Orbit()
+    cinema: Cinema | None = None
     actors: dict[str, Actor] = Field(default_factory=dict)
     model: Path | None = None
     # Character -> imported mesh with AL_open, AL_round, AL_wide shape keys.
@@ -62,6 +99,12 @@ class Stage(Contract):
     def scene_source(self) -> Stage:
         if bool(self.actors) == (self.model is not None):
             raise ValueError("choose either built-in actors or an embedded GLB model")
+        if self.cinema is None and any(
+            a.acting or a.costume != "forelock" for a in self.actors.values()
+        ):
+            raise ValueError("costumes and acting poses require stage.cinema")
+        if self.cinema and self.cinema.set == "asset" and self.model is None:
+            raise ValueError("the asset set requires a GLB scene")
         if self.actors and self.bindings:
             raise ValueError("mesh bindings apply only to a GLB")
         if len(set(self.bindings.values())) != len(self.bindings):
@@ -188,6 +231,7 @@ def render_stage(
     run: Path,
     number: int,
     cues: dict[str, list[Cue]],
+    height: int = 360,
 ) -> tuple[Path, Stage]:
     blender = shutil.which("blender")
     if not blender:
@@ -217,6 +261,7 @@ def render_stage(
                 "stage": stage.to_json_obj(),
                 "camera": camera.to_json_obj(),
                 "frames": seconds * 24,
+                "height": height,
                 "cues": cues,
             }
         ),
@@ -237,12 +282,15 @@ def render_stage(
             "--",
             str(config),
         ],
-        timeout=600,
+        timeout=3600 if stage.cinema else 600,
         cwd=run,
     )
     if result.returncode or result.survivors:
         message = (result.stdout + result.stderr).decode(errors="replace")
         raise ValidationRejected(f"Blender shot {number} failed: {message[-2000:]}")
+    filters = []
+    if stage.cinema and stage.cinema.denoise and (job / "no-native-denoise").exists():
+        filters = ["-filter_threads", "2", "-vf", "format=yuv444p,nlmeans=s=5:p=5:r=9"]
     dest = run / f"orbit-{number}.mp4"
     ffmpeg(
         binary,
@@ -255,12 +303,13 @@ def render_stage(
             str(job / "frame-%04d.png"),
             "-frames:v",
             str(seconds * 24),
+            *filters,
             "-c:v",
             "libx264",
             "-profile:v",
             "high",
             "-level",
-            "3.1",
+            "4.1" if height == 1080 else "3.1",
             "-crf",
             "18",
             "-pix_fmt",

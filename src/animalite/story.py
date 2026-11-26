@@ -68,12 +68,15 @@ class StoryShot(Contract):
 
 
 class Storyboard(Document):
+    height: Literal[360, 720, 1080] = 360
     story: str = Field(min_length=1)
     voices: dict[str, Voice] = Field(default_factory=dict)
     shots: list[StoryShot] = Field(min_length=1)
 
     @model_validator(mode="after")
     def require_cast_voices(self) -> Storyboard:
+        if self.height != 360 and any(shot.stage is None for shot in self.shots):
+            raise ValueError("native HD requires 3D stage shots throughout the storyboard")
         for shot in self.shots:
             for line in shot.dialogue:
                 if line.audio is None and line.character not in self.voices:
@@ -125,7 +128,15 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
         cues = speech_cues(run, shot.dialogue, shot.seconds) if shot.mouths or shot.stage else {}
         if shot.stage is not None:
             video, stage = render_stage(
-                binary, shot.stage, shot.camera, shot.seconds, manifest.parent, run, number, cues
+                binary,
+                shot.stage,
+                shot.camera,
+                shot.seconds,
+                manifest.parent,
+                run,
+                number,
+                cues,
+                board.height,
             )
             prepared_shots.append(shot.model_copy(update={"stage": stage}))
             playlist.append(f"file '{video.relative_to(run).as_posix()}'")
@@ -236,9 +247,12 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
     )
     expected = P_L_FINAL_OUTPUT.model_copy(
         update={
+            "width": board.height * 16 // 9,
+            "codec_level": "4.1" if board.height == 1080 else "3.1",
+            "height": board.height,
             "animation_frame_count": sum(
                 shot.seconds * P_L_FINAL_OUTPUT.cadence.animation_fps for shot in board.shots
-            )
+            ),
         }
     )
     issues = validate_output(probe_output(service.tools, pending), expected)

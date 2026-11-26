@@ -298,7 +298,7 @@ speaker. No per-word or per-frame mouth keys are required.
 for the built-in stick figures or point `model` at a self-contained GLB 2.0
 scene. For an imported speaking character, set e.g.
 `"bindings": {"Max": "MaxFace"}`; that mesh needs the relative shape keys
-`AL_open`, `AL_round`, and `AL_wide`. The stage uses Blender's solid-material
+`AL_open`, `AL_round`, and `AL_wide`. By default, the stage uses Blender's solid-material
 Workbench renderer. It renders actual meshes with occlusion and parallax.
 For exact character or set designs, provide their geometry and material colors.
 Generated flat artwork alone supplies no back or side geometry.
@@ -309,5 +309,44 @@ Yaw starts on the negative Y axis. Use `[0, 360]` for a continuous revolution,
 `[30, -60]` to reverse direction, or matching values for a fixed angle.
 Interpolation follows the specified angular travel at every delivery frame.
 Use `camera.zoom_start/end` for a lens change during the orbit.
-Each stage shot renders its 1–6 seconds at 640×360 and 24 fps;
-staged and illustrated shots can share a storyboard. Blender is needed only for stage shots.
+Each stage shot lasts 1–6 seconds at 24 fps. Stage and illustrated shots can share
+a 640×360 storyboard. Blender is needed only for stage shots.
+
+### Directing a stylized 3D performance
+
+Add `"cinema": {}` inside a shot's `stage` to switch on the CPU Cycles renderer.
+Built-in actors gain articulated heads, brows, eyes and shoulders, and materials
+for skin, eyes, fabric and metal. Imported GLB scenes keep their own meshes and
+materials. Choose a studio floor, a workshop with shelves and glazed jars, or
+the imported set. Daylight and sunset presets use area lights for the key,
+fill and rim.
+
+Try the three-second, two-character example from the repository root:
+
+```bash
+animalite story-render examples/workshop-reaction.json \
+    --workspace work/workshop --profile classical-warp-baseline
+```
+
+| Storyboard field | Direction |
+| --- | --- |
+| `height` | Top-level delivery height. Default 360. Use 720 or 1080 for a fully staged 16:9 story. |
+| `stage.cinema.set` | `studio` (default), `workshop`, or `asset` for an imported GLB with its own set. |
+| `stage.cinema.lighting` | `daylight` (default) or `sunset`. |
+| `stage.cinema.focus_distance` | Two distances from the camera in scene units. Use equal values for fixed focus or different values for a focus pull. Omit for deep focus. |
+| `stage.cinema.f_stop` | Aperture from 0.7 to 32. Lower values give a shallower depth of field when focus is enabled. |
+| `stage.cinema.ease_camera` | Ease the orbit, zoom and focus into and out of a move. Set to false for constant-rate travel. |
+| `stage.cinema.shutter` | Motion blur exposure in fractions of a frame, from 0 (default, off) to 1. |
+| `stage.cinema.samples` | Sampling budget per pixel, from 1 to 128 (default 12). Higher values cost more CPU time. |
+| `stage.cinema.denoise` | Default true. Uses Cycles OpenImageDenoise where available, or FFmpeg's spatial non-local means filter. |
+| `stage.actors.<name>.costume` | `forelock` (default) or `cap`. |
+| `stage.actors.<name>.acting` | Ordered poses timed by `at`, from 0 (first frame) to 1 (last frame). |
+
+For a reaction, direct the **eyes first**, turn the head a beat later, and hold
+the final pose so the audience can read it. Each pose sets `head_turn`,
+`head_tilt`, `gaze`, `brow`, `smile` (negative for a frown), and `squash` in the range −1 to 1, and
+`blink` and `raise_hand` in the range 0 to 1. Omitted controls return to
+neutral at that pose. Values ease between poses and hold outside them.
+The speaker's audio drives the mouth independently. These acting controls
+target the built-in cast. Custom characters need their own modeled geometry,
+rigs and animation in the GLB.

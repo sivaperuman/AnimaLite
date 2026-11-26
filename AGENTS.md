@@ -168,3 +168,8 @@ and check the final soundtrack with the picture. Respect a silent-story brief.
 For dialogue, use built-in stage actor names, imported face bindings, or place
 a 2D mouth on clean generated keyframes. For continuous rotation, choose a 3D
 stage and supply the orbit angles. Keep flat keyframes for illustrated cuts.
+
+For stylized 3D scenes, direct a cinematic stage using the acting and camera
+controls in README.md. Give characters motivated eye lines and timed reactions.
+Use a short rendered shot to judge the lighting, silhouettes and performance
+before rendering a full sequence. See `examples/workshop-reaction.json`.

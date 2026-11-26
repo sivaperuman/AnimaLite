@@ -3,6 +3,7 @@
 # mypy: allow-untyped-defs, allow-untyped-calls
 from __future__ import annotations
 
+import importlib
 import json
 import math
 import sys
@@ -58,22 +59,28 @@ def actor(name, spec):
         limb((x + sign * 0.055, y - 0.237, 1.96), (x + sign * 0.151, y - 0.226, 1.966), 0.016, ink)
     oval("Nose", (x, y - 0.315, 1.733), (0.040, 0.050, 0.035), spec["skin"])
     mouth = oval(f"{name}.mouth", (x, y - 0.292, 1.631), (0.096, 0.024, 0.015), ink)
+    add_mouth_keys(mouth)
+    return mouth
+
+
+def add_mouth_keys(mouth):
     mouth.shape_key_add(name="Basis")
     for key, sx, sz in [("AL_open", 1, 4.4), ("AL_round", 0.60, 1.4), ("AL_wide", 1.35, 1)]:
         shape = mouth.shape_key_add(name=key)
         for vert in shape.data:
             vert.co.x *= sx
             vert.co.z *= sz
-    return mouth
 
 
-def main():
-    config = Path(sys.argv[sys.argv.index("--") + 1])
+def build_scene(config):
     job = json.loads(config.read_text())
     stage, framing, frames = job["stage"], job["camera"], job["frames"]
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
     scene.render.fps = 24
+    cinema = stage.get("cinema")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    film = importlib.import_module("blender_cinema") if cinema else None
     mouths = {}
     if stage["model"]:
         bpy.ops.import_scene.gltf(filepath=str((config.parent.parent / stage["model"]).resolve()))
@@ -82,6 +89,9 @@ def main():
             if obj is None or obj.type != "MESH":
                 raise ValueError(f"missing mouth mesh {name!r} for {speaker}")
             mouths[speaker] = obj
+    elif film is not None:
+        for speaker, spec in stage["actors"].items():
+            mouths[speaker] = film.sculpt(speaker, spec, frames, color, add_mouth_keys)
     else:
         for speaker, spec in stage["actors"].items():
             mouths[speaker] = actor(speaker, spec)
@@ -115,8 +125,17 @@ def main():
     scene.frame_end = frames
     orbit = stage["orbit"]
     target = Vector(orbit["target"])
+    if film is not None:
+        film.build_set(cinema["set"], target, color)
+        film.light_scene(scene, cam, cinema, target, color)
     for i in range(frames):
         t = i / (frames - 1)
+        if cinema and cinema["ease_camera"]:
+            t = t * t * (3 - 2 * t)
+        if cinema and cinema["focus_distance"]:
+            near, far = cinema["focus_distance"]
+            cam.data.dof.focus_distance = near + (far - near) * t
+            cam.data.dof.keyframe_insert(data_path="focus_distance", frame=i + 1)
         yaw, pitch, roll = [
             math.radians(a + (b - a) * t) for a, b in (orbit["yaw"], orbit["pitch"], orbit["roll"])
         ]
@@ -125,30 +144,40 @@ def main():
         )
         cam.rotation_euler = (
             (target - cam.location).to_track_quat("-Z", "Y") @ Euler((0, 0, roll)).to_quaternion()
-        ).to_euler()
+        ).to_euler("XYZ", cam.rotation_euler)
         cam.data.lens = 42 * (
             framing["zoom_start"] + (framing["zoom_end"] - framing["zoom_start"]) * t
         )
         cam.keyframe_insert(data_path="location", frame=i + 1)
         cam.keyframe_insert(data_path="rotation_euler", frame=i + 1)
         cam.data.keyframe_insert(data_path="lens", frame=i + 1)
-    scene.render.engine = "BLENDER_WORKBENCH"
-    shading = scene.display.shading
-    shading.color_type = "MATERIAL"
-    shading.light = "STUDIO"
-    shading.show_shadows = True
-    shading.show_object_outline = True
-    shading.object_outline_color = (0.025, 0.035, 0.045)
-    shading.background_type = "WORLD"
-    scene.world = bpy.data.worlds.new("Stage background")
-    scene.world.color = color("#E7DABF")[:3]
-    scene.view_settings.view_transform = "Standard"
-    scene.display.render_aa = "FXAA"
-    scene.render.resolution_x = 640
-    scene.render.resolution_y = 360
+    if not cinema:
+        scene.render.engine = "BLENDER_WORKBENCH"
+        shading = scene.display.shading
+        shading.color_type = "MATERIAL"
+        shading.light = "STUDIO"
+        shading.show_shadows = True
+        shading.show_object_outline = True
+        shading.object_outline_color = (0.025, 0.035, 0.045)
+        shading.background_type = "WORLD"
+        scene.world = bpy.data.worlds.new("Stage background")
+        scene.world.color = color("#E7DABF")[:3]
+        scene.view_settings.view_transform = "Standard"
+        scene.display.render_aa = "FXAA"
+    height = job.get("height", 360)
+    scene.render.resolution_x = height * 16 // 9
+    scene.render.resolution_y = height
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"
     scene.render.filepath = str(config.parent / "frame-")
+    return scene
+
+
+def main():
+    config = Path(sys.argv[sys.argv.index("--") + 1])
+    scene = build_scene(config)
+    if scene.render.engine == "CYCLES" and not scene.cycles.use_denoising:
+        (config.parent / "no-native-denoise").touch()
     bpy.ops.render.render(animation=True)
 
 
