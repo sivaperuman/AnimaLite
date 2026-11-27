@@ -310,6 +310,36 @@ def validate_request(
             ],
         )
 
+    if request.conditioning is not None:
+        if "conditioned_video" not in profile.supported_tasks:
+            issues.append(
+                _error(
+                    CodeVAL.CONTROL_UNSUPPORTED,
+                    "conditioning",
+                    "This profile does not accept video conditioning.",
+                    "Select a conditioned video profile.",
+                )
+            )
+        if set(request.conditioning.anchor_strengths) - set(request.anchors.indices):
+            issues.append(
+                _error(
+                    CodeVAL.CONTROL_VALUE_INVALID,
+                    "conditioning.anchor_strengths",
+                    "A strength names a frame without an anchor.",
+                    "Use the anchor animation indices.",
+                )
+            )
+        for name, asset in request.conditioning.assets().items():
+            path = Path(asset.path)
+            if not path.is_file() or sha256_file(str(path)) != asset.content_hash:
+                issues.append(
+                    _error(
+                        CodeVAL.ANCHOR_HASH_MISMATCH,
+                        f"conditioning.{name}",
+                        f"Missing or changed conditioning media: {path}",
+                        "Supply the pinned media file.",
+                    )
+                )
     issues.extend(_validate_anchors(request, profile))
     issues.extend(_validate_profile_fit(request, profile))
     issues.extend(_validate_media(request))

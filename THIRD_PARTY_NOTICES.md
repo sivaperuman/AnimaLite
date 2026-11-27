@@ -77,6 +77,21 @@ terms. The derivation â€” repo `LICENSE` (MIT) plus upstream's model statement â
 is recorded in `docs/decisions/DEC-0013-rife-licence-position.md` and is
 `use_eligible: false` pending review. It blocks qualification, not development.
 
+### Optional LTX-Video and Wan VACE
+
+The `neural` extra uses the Diffusers implementations of LTX-Video and Wan
+VACE through PyTorch. Transformers, Accelerate, SentencePiece, ftfy and
+torchvision supply their runtime dependencies. AnimaLite adds an adapter and
+supervised worker. Model parameters come from local Diffusers snapshots.
+The default installation ships no checkpoint. Record the upstream terms,
+selected revision, content digest and purpose for each actual snapshot
+through the existing execution admission process.
+
+Upstream implementation and example checkpoint records:
+[Diffusers](https://github.com/huggingface/diffusers/tree/v0.35.1),
+[LTX-Video 0.9.5](https://huggingface.co/Lightricks/LTX-Video-0.9.5),
+[Wan 2.1 VACE 1.3B](https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B-diffusers).
+
 ## Python distributions
 
 Versions are the exact pins in `constraints/dev-linux-cpython311.txt`. The

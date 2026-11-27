@@ -21,10 +21,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from animalite.contracts.admission import AdmissionPurpose
-from animalite.contracts.assets import AnchorSet
+from animalite.contracts.assets import AnchorSet, VideoConditioning
 from animalite.contracts.media import OutputSpec
 from animalite.contracts.profile import Capabilities, EngineProfile
 from animalite.contracts.results import DeviceEvidence
+from animalite.contracts.shot import ShotIntent
 from animalite.contracts.validation import ValidationIssue
 from animalite.errors import JobCancelled, JobTimeoutError
 from animalite.media.ffmpeg import FFmpegTools
@@ -55,8 +56,12 @@ class AdapterContext:
         cancel_requested: object | None = None,
         deadline: float | None = None,
         cancel: Callable[[], bool] | None = None,
+        conditioning: VideoConditioning | None = None,
+        shot: ShotIntent | None = None,
         purpose: AdmissionPurpose = AdmissionPurpose.RESEARCH,
     ) -> None:
+        self.conditioning = conditioning
+        self.shot = shot
         self.anchor_frames = anchor_frames
         self.output = output
         self.anchors = anchors

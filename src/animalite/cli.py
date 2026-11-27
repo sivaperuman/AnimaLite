@@ -27,6 +27,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from animalite import __version__
+from animalite.adapters.ltx_wan_bundle import ModelBundle, Snapshot, snapshot_digest
 from animalite.adapters.registry import Registry, default_registry
 from animalite.adapters.rife_ncnn import RIFE_PROFILE
 from animalite.adapters.rife_provision import ProvisioningError, provision
@@ -36,8 +37,8 @@ from animalite.bench.evaluate import build_report
 from animalite.bench.ledger import RunLedger
 from animalite.bench.runner import BenchmarkRunner, build_plan, load_dataset, load_host_record
 from animalite.contracts.admission import AdmissionPurpose
-from animalite.contracts.assets import AnchorSet
-from animalite.contracts.base import content_digest
+from animalite.contracts.assets import AnchorSet, AssetRef, VideoConditioning
+from animalite.contracts.base import content_digest, sha256_file
 from animalite.contracts.benchmark import (
     DatasetClip,
     DatasetManifest,
@@ -271,6 +272,18 @@ def cmd_story_render(args: argparse.Namespace) -> int:
     except (ValidationError, OSError) as exc:
         raise ValidationRejected(str(exc)) from exc
     print(movie)
+    return EXIT_OK
+
+
+def cmd_pin_ltx_wan(args: argparse.Namespace) -> int:
+    """Identify both local model directories for review and future replay."""
+
+    def pin(name: str) -> Snapshot:
+        directory = Path(name).resolve(strict=True)
+        return Snapshot(directory=directory, digest=snapshot_digest(directory))
+
+    bundle = ModelBundle(ltx=pin(args.ltx), wan=pin(args.wan))
+    print(bundle.model_dump_json(indent=2))
     return EXIT_OK
 
 
@@ -743,6 +756,20 @@ def _envelope(args: argparse.Namespace) -> ExecutionEnvelope | None:
     return envelope
 
 
+def _video_conditioning(args: argparse.Namespace) -> VideoConditioning | None:
+    assets = {}
+    for name in ("reference_image", "control_video", "mask_image", "mask_video"):
+        filename = getattr(args, name, None)
+        if filename:
+            path = Path(filename).resolve(strict=True)
+            assets[name] = AssetRef(path=str(path), content_hash=sha256_file(str(path)))
+    if args.conditioning:
+        if assets:
+            raise ValidationRejected("choose --conditioning or individual media flags")
+        return VideoConditioning.model_validate_json(Path(args.conditioning).read_bytes())
+    return VideoConditioning.model_validate(assets) if assets else None
+
+
 def _request(args: argparse.Namespace) -> RenderRequest:
     # A serialized request round-trips exactly, which is what lets the benchmark
     # execute an identical job in a fresh process for process-cold timing.
@@ -772,6 +799,7 @@ def _request(args: argparse.Namespace) -> RenderRequest:
         ),
         anchors=anchors,
         engine_profile_id=args.profile,
+        conditioning=_video_conditioning(args),
         output=output,
         controls=controls,
         timeout_seconds=args.timeout,
@@ -803,6 +831,14 @@ def _add_request_arguments(parser: argparse.ArgumentParser) -> None:
             "profile: rendering never selects an engine implicitly."
         ),
     )
+    parser.add_argument(
+        "--conditioning",
+        help="JSON containing pinned reference, control video, mask or per-anchor strengths",
+    )
+    parser.add_argument("--reference-image", help="PNG character appearance reference")
+    parser.add_argument("--control-video", help="MP4 motion reference, sampled at animation fps")
+    parser.add_argument("--mask-image", help="PNG edit mask: white refines, black preserves")
+    parser.add_argument("--mask-video", help="MP4 with a moving edit mask")
     parser.add_argument("--anchors", default=None, help="path to an anchor-set JSON file")
     parser.add_argument(
         "--request-file",
@@ -937,6 +973,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     runtime = sub.add_parser("runtime", help="inspect the pinned learned model runtime")
     runtime_sub = runtime.add_subparsers(dest="runtime_command", required=True)
+    pin = runtime_sub.add_parser("pin-ltx-wan", help="fingerprint two local Diffusers snapshots")
+    pin.add_argument("--ltx", required=True)
+    pin.add_argument("--wan", required=True)
+    pin.set_defaults(func=cmd_pin_ltx_wan)
     rt_status = runtime_sub.add_parser(
         "status", help="report install, verification, compatibility and admission"
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import wave
 from pathlib import Path
 from tempfile import mkdtemp
@@ -19,7 +20,7 @@ from animalite.choreography import (
     validate_contacts,
 )
 from animalite.contracts.admission import AdmissionPurpose
-from animalite.contracts.assets import AnchorSet, AssetRef, InputAnchor
+from animalite.contracts.assets import AnchorSet, AssetRef, InputAnchor, VideoConditioning
 from animalite.contracts.base import Contract, Document, sha256_file
 from animalite.contracts.enums import JobState
 from animalite.contracts.job import RenderRequest
@@ -54,6 +55,7 @@ class StoryShot(Contract):
     action: str = Field(min_length=1)
     seconds: int = Field(ge=1, le=10)
     timing: AnchorTiming = AnchorTiming.LINEAR
+    conditioning: VideoConditioning | None = None
     camera: Camera = Camera()
     dialogue: list[Dialogue] = Field(default_factory=list)
     poses: list[Pose] = Field(default_factory=list, max_length=4)
@@ -66,6 +68,10 @@ class StoryShot(Contract):
     def check_timing(self) -> StoryShot:
         frames = [pose.frame for pose in self.poses]
         end = self.seconds * P_L_FINAL_OUTPUT.cadence.animation_fps - 1
+        if self.conditioning and (
+            not self.poses or set(self.conditioning.anchor_strengths) - set(frames)
+        ):
+            raise ValueError("neural conditioning requires image poses at the named frame indices")
         if self.gallop:
             if self.dog_walk or self.stage or self.poses or self.mouths:
                 raise ValueError("gallop is a self-contained Studio action")
@@ -191,6 +197,28 @@ class Storyboard(Document):
                 ):
                     raise ValueError(f"no voice assigned to {line.character!r}")
         return self
+
+
+def retain_conditioning(
+    guide: VideoConditioning | None, source_root: Path, run: Path
+) -> tuple[VideoConditioning | None, VideoConditioning | None]:
+    """Keep portable asset references and bind the same bytes to this render request."""
+    if guide is None:
+        return None, None
+    retained = {}
+    resolved = {}
+    for role, asset in guide.assets().items():
+        ext = ".mp4" if role.endswith("video") else ".png"
+        rel = Path("artwork") / (asset.content_hash.removeprefix("sha256:") + ext)
+        dest = run / rel
+        dest.parent.mkdir(exist_ok=True)
+        if not dest.exists():
+            shutil.copyfile(source_root / asset.path, dest)
+        if sha256_file(str(dest)) != asset.content_hash:
+            raise ValidationRejected(f"changed conditioning asset for {role}")
+        retained[role] = asset.model_copy(update={"path": str(rel)})
+        resolved[role] = asset.model_copy(update={"path": str(dest.resolve())})
+    return guide.model_copy(update=retained), guide.model_copy(update=resolved)
 
 
 def render_story(manifest: Path, workspace: Path, profile: str, purpose: AdmissionPurpose) -> Path:
@@ -323,11 +351,15 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
         output = P_L_FINAL_OUTPUT.model_copy(
             update={"animation_frame_count": shot.poses[-1].frame + 1}
         )
-        prepared_shots.append(shot.model_copy(update={"poses": prepared_poses}))
+        stored_guide, resolved_guide = retain_conditioning(shot.conditioning, manifest.parent, run)
+        prepared_shots.append(
+            shot.model_copy(update={"poses": prepared_poses, "conditioning": stored_guide})
+        )
         request = RenderRequest(
             request_id=f"shot-{number}",
             engine_profile_id=profile,
             execution_purpose=purpose,
+            conditioning=resolved_guide,
             shot=ShotIntent(
                 shot_code=f"shot-{number}",
                 target_duration_seconds=shot.seconds,

@@ -558,3 +558,48 @@ has upper leg, lower leg and paw in three equal square cells. In a 128-unit
 cell the proximal and distal pivots are (64,24) and (64,104). Register the
 bottom of the paw at the distal pivot. The ink treatment continues to draw
 the same joint tracks. These controls run in the deterministic Studio renderer.
+
+### LTX and Wan neural generation
+
+The opt-in `ltx-wan-cpu` profile runs LTX-Video and Wan VACE sequentially
+on CPU. LTX generates a draft from the shot prompt, 2–4 approved images at
+their animation indices, and an optional motion video. Wan receives this
+draft and a character reference, which defaults to the opening image. A
+white edit mask allows refinement. Black pixels preserve the motion video,
+or the LTX draft if a motion video was omitted. Approved frames are restored
+exactly before the common delivery encoder. Direct renders support landscape
+320×180 and 640×360, plus portrait 144×256, 180×320 and 360×640.
+
+Install the optional `.[neural]` dependencies in a Python environment with
+CPU PyTorch wheels. Supply two local Diffusers-format snapshots, such as
+Lightricks/LTX-Video-0.9.5 and Wan-AI/Wan2.1-VACE-1.3B-diffusers. Each must
+contain safetensors weights, model_index.json, and the scheduler, tokenizer,
+text_encoder, transformer and vae directories. Pin the selected files and use
+the existing execution admission process for the two resulting digests and
+the intended purpose. See [execution admissions](docs/licensing/admissions/README.md).
+
+```bash
+animalite runtime pin-ltx-wan --ltx /models/ltx --wan /models/wan > bundle.json
+export ANIMALITE_LTX_WAN_BUNDLE="$PWD/bundle.json"
+animalite render --profile ltx-wan-cpu --anchors anchors.json \
+  --motion "The dog extends its forelegs, lands, then turns toward the handler" \
+  --control-video gallop.mp4 --reference-image dog.png --mask-video dog-mask.mp4 \
+  --control seed=42 --workspace work/neural
+```
+
+Control and mask videos use MP4 and must cover the requested clip at animation
+cadence. `--mask-image` accepts a static PNG. To set individual anchor strengths,
+pass `--conditioning conditions.json` with `anchor_strengths` keyed by animation
+index and any `reference_image`, `control_video`, `mask_image` or `mask_video`
+asset references (each has `path` and `content_hash`). The same object is
+available as `conditioning` on storyboard image-pose shots. Relative media paths
+in a storyboard resolve alongside the storyboard and are retained for replay.
+Use `animalite story-render board.json --profile ltx-wan-cpu` for those shots.
+An existing Studio gallop can supply the motion MP4 for a neural render.
+
+The worker loads each verified snapshot in turn from local disk. Allow scratch
+space for a private copy of the larger snapshot. The integration test runs
+both neural architectures with freshly initialized small weights. Run it with
+`ANIMALITE_RUN_NEURAL_SMOKE=1 python -m pytest tests/test_ltx_wan.py` after
+installing the neural dependencies. Pretrained visual quality, model memory
+use, and throughput on the target low-spec CPU remain unmeasured.

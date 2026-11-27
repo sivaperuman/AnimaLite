@@ -57,6 +57,8 @@ def index_story(root: Path, board: Storyboard, clips: list[Path]) -> StoryIndex:
                 files.add(a.ink_image)
     for shot in board.shots:
         files.update(p.image for p in shot.poses)
+        if shot.conditioning:
+            files.update(Path(asset.path) for asset in shot.conditioning.assets().values())
         files.update(line.audio for line in shot.dialogue if line.audio)
         if shot.gallop and shot.gallop.backdrop:
             files.add(shot.gallop.backdrop)
