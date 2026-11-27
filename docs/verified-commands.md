@@ -642,3 +642,13 @@ executed on this container before admission was enforced (§12 above), which is
 an engineering result and not a qualification; on this checkout it does not
 execute at all until an admission decision is recorded. Remaining prerequisites are listed in
 `docs/verification/package-a-traceability.md`.
+
+## Studio S1 local acting experiment
+
+The prototype entry point, optional dependencies and exact reproduction commands are in the [acting test](../spikes/studio_s1/README.md). The [decision record](decisions/STUDIO-S1-rig-feasibility.md) records the host, timings, memory method, scratch use and output SHA-256 values for four process-fresh native-720p exports.
+
+- `ruff check --no-cache .` and `ruff format --no-cache --check .` passed. Package A's strict `mypy` run reported success in 57 source files.
+- `python -m pytest -q spikes/studio_s1/test_performance.py` passed all three tests. They exercise all frames for reach, stance, continuous hand contacts, ownership and unfolding.
+- With an intentionally missing FFprobe the render exited 1, recorded `ToolUnavailableError` in the new attempt and published no video.
+- The direct combined suite produced 230 passes and one failure in the existing descendant-teardown test. The reported child was a zombie adopted by PID 1 (`tail`) on this host. The unchanged test passed when run under a Linux child subreaper. The unchanged combined suite then passed all 231 tests in 125.71 s under the subreaper. The downloadable review bundle in the shared workspace contains both transcripts and the wrapper.
+- Both complete backend pairs had identical repeated RGB and MP4 hashes per backend. FFmpeg `-xerror -err_detect explode` decoded both candidates and the side-by-side to completion. The review package includes FFprobe JSON, frame-indexed screenshots, raw manifests and RSS samples.
