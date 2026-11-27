@@ -55,6 +55,7 @@ class StoryShot(Contract):
     action: str = Field(min_length=1)
     seconds: int = Field(ge=1, le=10)
     timing: AnchorTiming = AnchorTiming.LINEAR
+    controls: dict[str, float | int | str | bool] = Field(default_factory=dict)
     conditioning: VideoConditioning | None = None
     camera: Camera = Camera()
     dialogue: list[Dialogue] = Field(default_factory=list)
@@ -68,6 +69,8 @@ class StoryShot(Contract):
     def check_timing(self) -> StoryShot:
         frames = [pose.frame for pose in self.poses]
         end = self.seconds * P_L_FINAL_OUTPUT.cadence.animation_fps - 1
+        if self.controls and (not self.poses or "timing" in self.controls):
+            raise ValueError("shot controls require image poses; use the timing field for timing")
         if self.conditioning and (
             not self.poses or set(self.conditioning.anchor_strengths) - set(frames)
         ):
@@ -366,7 +369,10 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
                 motion_description=shot.action,
                 camera=shot.camera.angle,
             ),
-            controls={"timing": shot.timing} if shot.timing != "linear" else {},
+            controls={
+                **shot.controls,
+                **({"timing": shot.timing} if shot.timing != "linear" else {}),
+            },
             anchors=AnchorSet(anchors=anchors),
             output=output,
         )

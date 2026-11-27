@@ -562,30 +562,64 @@ the same joint tracks. These controls run in the deterministic Studio renderer.
 ### LTX and Wan neural generation
 
 The opt-in `ltx-wan-cpu` profile runs LTX-Video and Wan VACE sequentially
-on CPU. LTX generates a draft from the shot prompt, 2–4 approved images at
-their animation indices, and an optional motion video. Wan receives this
-draft and a character reference, which defaults to the opening image. A
-white edit mask allows refinement. Black pixels preserve the motion video,
-or the LTX draft if a motion video was omitted. Approved frames are restored
-exactly before the common delivery encoder. Direct renders support landscape
-320×180 and 640×360, plus portrait 144×256, 180×320 and 360×640.
+on CPU. The default guided mode builds a motion guide from 2–4 timed poses
+using dense optical flow in both directions. It gives less weight to a warped
+pose where the forward and reverse motion estimates disagree. When the two
+warps place a strong outline in different locations, a connected region
+selects one source pose to reduce double-drawn paws. A supplied motion
+video can serve as the guide instead. LTX conditions on the guide and the
+approved poses. Wan refines the LTX draft using the character reference, which
+defaults to the opening pose. At each stage the renderer limits per-channel
+changes and reduces the contribution of a proposal whose color diverges from
+the guide or draft. Black mask pixels preserve the guide. Approved poses are
+restored exactly before encoding. Direct renders support landscape 320×180
+and 640×360, plus portrait 144×256, 180×320 and 360×640.
 
-Install the optional `.[neural]` dependencies in a Python environment with
-CPU PyTorch wheels. Supply two local Diffusers-format snapshots, such as
-Lightricks/LTX-Video-0.9.5 and Wan-AI/Wan2.1-VACE-1.3B-diffusers. Each must
-contain safetensors weights, model_index.json, and the scheduler, tokenizer,
-text_encoder, transformer and vae directories. Pin the selected files and use
-the existing execution admission process for the two resulting digests and
-the intended purpose. See [execution admissions](docs/licensing/admissions/README.md).
+Install the optional `.[neural]` dependencies in an environment with CPU
+PyTorch wheels. The first command below prints the exact upstream revisions,
+digests and storage requirements without downloading weights. Installation
+fetches only the selected Diffusers components and verifies both local trees
+before printing a renderable bundle. The pair uses 44.43 GB of storage plus
+25.39 GB for the largest temporary worker copy. Inference RAM is additional.
+The project tracks the pending research decision for these exact checkpoints.
+See [the pretrained checkpoint record](docs/licensing/admissions/ltx-wan-research.json).
 
 ```bash
-animalite runtime pin-ltx-wan --ltx /models/ltx --wan /models/wan > bundle.json
+animalite runtime fetch-ltx-wan
+animalite runtime fetch-ltx-wan --install --cache-dir /models/cache > bundle.json
 export ANIMALITE_LTX_WAN_BUNDLE="$PWD/bundle.json"
 animalite render --profile ltx-wan-cpu --anchors anchors.json \
   --motion "The dog extends its forelegs, lands, then turns toward the handler" \
-  --control-video gallop.mp4 --reference-image dog.png --mask-video dog-mask.mp4 \
   --control seed=42 --workspace work/neural
 ```
+
+To use existing local checkpoints or add transformer LoRAs, pin the files
+together. Each optional LoRA gets its own digest in the profile and must be
+covered by the execution decision. Either LoRA may be omitted. A scale of
+zero disables that adapter for a controlled comparison. Compatible adapters
+must match their respective transformer architectures.
+See [execution admissions](docs/licensing/admissions/README.md).
+
+```bash
+animalite runtime pin-ltx-wan --ltx /models/ltx --wan /models/wan \
+  --ltx-lora /models/motion.safetensors --wan-lora /models/linework.safetensors > bundle.json
+```
+
+| Render control | Effect |
+| --- | --- |
+| `ltx_lora_scale`, `wan_lora_scale` | Scale the low-rank update inside each transformer, from 0 to 2. Default 1. |
+| `ltx_mix`, `wan_mix` | Maximum fraction of each stage's pixel correction in guided mode. Defaults 0.20 and 0.15. |
+| `residual_limit` | Guided per-stage color correction limit and agreement scale, in RGB levels. Default 24 of 255. |
+| `render_mode=diffusion` | Render the full diffusion output for comparison with the earlier profile. Black mask pixels retain the driving video or raw LTX draft in this mode. |
+| `retain_stages=true` | Save the LTX and Wan proposals and the available guide as RGB arrays under the attempt's `work/ltx-wan` directory, before endpoint restoration and encoding. |
+
+Pass controls individually, for example `--control wan_lora_scale=0.75`.
+Image-pose storyboard shots accept the same overrides in their `controls`
+object. To evaluate a trained checkpoint or LoRA, hold the poses, prompt,
+seed and steps fixed. Compare the guide alone, raw diffusion, and guided output
+on the withheld frames. Compare each LoRA at zero and its intended scale.
+Inspect airborne paws, contact frames and the handler silhouette at normal
+speed and frame by frame. Record the checkpoint digests and peak CPU memory.
 
 Control and mask videos use MP4 and must cover the requested clip at animation
 cadence. `--mask-image` accepts a static PNG. To set individual anchor strengths,
@@ -601,5 +635,7 @@ The worker loads each verified snapshot in turn from local disk. Allow scratch
 space for a private copy of the larger snapshot. The integration test runs
 both neural architectures with freshly initialized small weights. Run it with
 `ANIMALITE_RUN_NEURAL_SMOKE=1 python -m pytest tests/test_ltx_wan.py` after
-installing the neural dependencies. Pretrained visual quality, model memory
+installing the neural dependencies. The [dog clip evaluation](docs/verification/ltx-wan-weighting.md)
+includes held-out frame errors for the raw, guided and guide-only runs.
+Pretrained visual quality, model memory
 use, and throughput on the target low-spec CPU remain unmeasured.

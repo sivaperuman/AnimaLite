@@ -1,0 +1,20 @@
+{
+  "schema_version": "animalite.contracts/v1",
+  "record_id": "ltx095-wan21-vace-research",
+  "profile_id": "ltx-wan-cpu",
+  "subject": "Lightricks LTX-Video 0.9.5 and Wan 2.1 VACE 1.3B Diffusers snapshots",
+  "decision": "pending",
+  "artifact_hashes": [
+    "sha256:5274674e388b5fe75e12e274f23ad500cd9cb6f57c5efc7abf820a07d33c686d",
+    "sha256:c09f585bfad3ba2faf659f889a3d898fd43ac0fdb258b83c0385614ea45c9dd1"
+  ],
+  "permitted_purposes": [
+    "research"
+  ],
+  "conditions": [],
+  "notes": [
+    "Review LTX-Video terms at https://huggingface.co/Lightricks/LTX-Video-0.9.5/tree/e58e28c39631af4d1468ee57a853764e11c1d37e",
+    "Review Wan VACE terms at https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B-diffusers/tree/ec4d2cb062b548996b179d493fdd05340de702a1",
+    "Any optional LoRA must also be reviewed and covered by its exact content digest."
+  ]
+}

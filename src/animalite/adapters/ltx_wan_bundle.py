@@ -9,7 +9,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from animalite.contracts.base import Contract, Document
+from animalite.contracts.base import Contract, Document, sha256_file
 from animalite.errors import ValidationRejected
 
 COMPONENTS = ("scheduler", "text_encoder", "tokenizer", "transformer", "vae")
@@ -17,9 +17,22 @@ DATA_SUFFIXES = {".safetensors", ".json", ".model", ".txt", ".tiktoken"}
 Digest = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 
 
+class LoraWeights(Contract):
+    path: Path
+    digest: Digest
+
+    @classmethod
+    def pin(cls, filename: str) -> LoraWeights:
+        path = Path(filename).resolve(strict=True)
+        if path.suffix != ".safetensors" or not path.is_file():
+            raise ValidationRejected("a LoRA must be a local .safetensors file")
+        return cls(path=path, digest=sha256_file(str(path)))
+
+
 class Snapshot(Contract):
     directory: Path
     digest: Digest
+    lora: LoraWeights | None = None
 
 
 class ModelBundle(Document):
@@ -66,4 +79,9 @@ def configured_bundle() -> ModelBundle | None:
     bundle = ModelBundle.model_validate_json(Path(path).read_bytes())
     if not all(s.directory.is_absolute() for s in (bundle.ltx, bundle.wan)):
         raise ValidationRejected("model bundle requires absolute snapshot directories")
+    for snapshot in (bundle.ltx, bundle.wan):
+        if snapshot.lora and (
+            not snapshot.lora.path.is_absolute() or snapshot.lora.path.suffix != ".safetensors"
+        ):
+            raise ValidationRejected("a pinned LoRA requires an absolute .safetensors path")
     return bundle

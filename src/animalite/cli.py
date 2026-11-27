@@ -27,7 +27,8 @@ from typing import Any
 from pydantic import ValidationError
 
 from animalite import __version__
-from animalite.adapters.ltx_wan_bundle import ModelBundle, Snapshot, snapshot_digest
+from animalite.adapters.ltx_wan_bundle import LoraWeights, ModelBundle, Snapshot, snapshot_digest
+from animalite.adapters.ltx_wan_pretrained import fetch_pretrained, pretrained_plan
 from animalite.adapters.registry import Registry, default_registry
 from animalite.adapters.rife_ncnn import RIFE_PROFILE
 from animalite.adapters.rife_provision import ProvisioningError, provision
@@ -275,14 +276,26 @@ def cmd_story_render(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_fetch_ltx_wan(args: argparse.Namespace) -> int:
+    if args.install:
+        print(fetch_pretrained(args.cache_dir).model_dump_json(indent=2))
+    else:
+        print(json.dumps(pretrained_plan(), indent=2))
+    return EXIT_OK
+
+
 def cmd_pin_ltx_wan(args: argparse.Namespace) -> int:
     """Identify both local model directories for review and future replay."""
 
-    def pin(name: str) -> Snapshot:
+    def pin(name: str, lora: str | None) -> Snapshot:
         directory = Path(name).resolve(strict=True)
-        return Snapshot(directory=directory, digest=snapshot_digest(directory))
+        return Snapshot(
+            directory=directory,
+            digest=snapshot_digest(directory),
+            lora=LoraWeights.pin(lora) if lora else None,
+        )
 
-    bundle = ModelBundle(ltx=pin(args.ltx), wan=pin(args.wan))
+    bundle = ModelBundle(ltx=pin(args.ltx, args.ltx_lora), wan=pin(args.wan, args.wan_lora))
     print(bundle.model_dump_json(indent=2))
     return EXIT_OK
 
@@ -973,9 +986,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     runtime = sub.add_parser("runtime", help="inspect the pinned learned model runtime")
     runtime_sub = runtime.add_subparsers(dest="runtime_command", required=True)
+    fetch = runtime_sub.add_parser(
+        "fetch-ltx-wan", help="plan or install the pinned pretrained checkpoints"
+    )
+    fetch.add_argument(
+        "--install", action="store_true", help="download, verify and print a local bundle"
+    )
+    fetch.add_argument("--cache-dir", type=Path, help="Hugging Face checkpoint cache")
+    fetch.set_defaults(func=cmd_fetch_ltx_wan)
     pin = runtime_sub.add_parser("pin-ltx-wan", help="fingerprint two local Diffusers snapshots")
     pin.add_argument("--ltx", required=True)
     pin.add_argument("--wan", required=True)
+    pin.add_argument("--ltx-lora", help="optional local LTX transformer LoRA safetensors")
+    pin.add_argument("--wan-lora", help="optional local Wan VACE transformer LoRA safetensors")
     pin.set_defaults(func=cmd_pin_ltx_wan)
     rt_status = runtime_sub.add_parser(
         "status", help="report install, verification, compatibility and admission"

@@ -81,7 +81,8 @@ is recorded in `docs/decisions/DEC-0013-rife-licence-position.md` and is
 
 The `neural` extra uses the Diffusers implementations of LTX-Video and Wan
 VACE through PyTorch. Transformers, Accelerate, SentencePiece, ftfy and
-torchvision supply their runtime dependencies. AnimaLite adds an adapter and
+torchvision supply their runtime dependencies. PEFT loads optional LoRA updates.
+OpenCV supplies the CPU dense optical flow used for guided rendering. AnimaLite adds an adapter and
 supervised worker. Model parameters come from local Diffusers snapshots.
 The default installation ships no checkpoint. Record the upstream terms,
 selected revision, content digest and purpose for each actual snapshot

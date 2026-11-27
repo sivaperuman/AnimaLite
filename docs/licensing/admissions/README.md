@@ -39,6 +39,11 @@ being requested. It carries `"decision": "pending"`, so copying it into the
 admission directory installs a block, not a pass; a test asserts that nothing
 committed here is ever `approved`.
 
+`ltx-wan-research.json` records the two pretrained snapshot digests for the
+LTX-Video and Wan VACE research request. `animalite runtime fetch-ltx-wan`
+prints the corresponding revisions and storage plan. A run using a separate
+LoRA also needs the LoRA digest from `animalite runtime pin-ltx-wan`.
+
 ## Recording a decision
 
 Copy the dossier into the admission directory, then set `decision` to

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import json
+import shutil
 import sys
 from importlib import import_module
 from importlib.metadata import version
@@ -15,9 +16,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from animalite.adapters.ltx_wan_bundle import Snapshot, snapshot_digest
+from animalite.adapters.ltx_wan_guidance import anchor_guide, weighted_refinement
+from animalite.contracts.base import sha256_file
 
 
-def _stage(pipe_type: Any, snapshot: Snapshot, args: dict[str, Any], folder: Path) -> list[Any]:
+def _stage(
+    pipe_type: Any, snapshot: Snapshot, args: dict[str, Any], folder: Path, lora_scale: float
+) -> list[Any]:
     torch = import_module("torch")
     # Load only the verified private copy. Mutable source files cannot change
     # between verification and inference, and no repository Python is copied.
@@ -28,6 +33,18 @@ def _stage(pipe_type: Any, snapshot: Snapshot, args: dict[str, Any], folder: Pat
         pipe = pipe_type.from_pretrained(
             str(safe), local_files_only=True, use_safetensors=True, torch_dtype=torch.float32
         )
+        if snapshot.lora:
+            local = safe / "stage_lora.safetensors"
+            shutil.copyfile(snapshot.lora.path, local)
+            if sha256_file(str(local)) != snapshot.lora.digest:
+                raise ValueError("LoRA weights differ from the admitted digest")
+            if lora_scale:
+                pipe.load_lora_weights(
+                    str(safe), weight_name=local.name, adapter_name="shot", local_files_only=True
+                )
+                if "shot" not in pipe.get_list_adapters().get("transformer", []):
+                    raise ValueError("LoRA did not attach to this stage's transformer")
+                pipe.set_adapters("shot", adapter_weights=lora_scale)
         pipe.to("cpu")
         for model in (pipe.text_encoder, pipe.transformer, pipe.vae):
             if any(parameter.device.type != "cpu" for parameter in model.parameters()):
@@ -82,19 +99,43 @@ def run(folder: Path) -> None:
         frames = [padded(frame) for frame in raw]
         return frames + [frames[-1]] * (count - len(frames))
 
-    anchors = {
-        i: padded(np.load(folder / f"anchor-{i}.npy", allow_pickle=False)) for i in cfg["indices"]
-    }
+    original = {i: np.load(folder / f"anchor-{i}.npy", allow_pickle=False) for i in cfg["indices"]}
+    anchors = {i: padded(frame) for i, frame in original.items()}
     driving = clip("control_video") if "control_video" in media else []
     masks = (
         clip("mask_video")
         if "mask_video" in media
         else (clip("mask_image") if "mask_image" in media else [])
     )
+    guide = driving
+    guided = knobs["render_mode"] == "guided"
+    if guided and not guide:
+        guide = [padded(frame) for frame in anchor_guide(original)]
+        guide.extend([guide[-1]] * (count - n))
+
+    def save_stage(name: str, frames: list[Any]) -> None:
+        if not knobs["retain_stages"]:
+            return
+        stage = np.lib.format.open_memmap(
+            folder / f"{name}.npy", mode="w+", dtype=np.uint8, shape=(n, h, w, 3)
+        )
+        for index in range(n):
+            stage[index] = np.asarray(frames[index])[:h, :w]
+        stage.flush()
+
+    def mix(base: Any, proposal: Any, weight: float) -> Any:
+        return image.fromarray(
+            weighted_refinement(
+                np.asarray(base), np.asarray(proposal), weight, knobs["residual_limit"]
+            )
+        )
+
+    if guide:
+        save_stage("guide", guide)
     conditions = []
-    if driving and knobs["motion_strength"] > 0:
+    if guide and knobs["motion_strength"] > 0:
         conditions.append(
-            ltx.LTXVideoCondition(video=driving, frame_index=0, strength=knobs["motion_strength"])
+            ltx.LTXVideoCondition(video=guide, frame_index=0, strength=knobs["motion_strength"])
         )
     for i, img in anchors.items():
         weight = cfg["strengths"].get(str(i), 1.0)
@@ -119,7 +160,17 @@ def run(folder: Path) -> None:
             "generator": torch.Generator(device="cpu").manual_seed(knobs["seed"]),
         },
         snapshots,
+        knobs["ltx_lora_scale"],
     )
+    save_stage("ltx_raw", draft)
+    if guided:
+        draft = [
+            mix(base, proposal, knobs["ltx_mix"])
+            for base, proposal in zip(guide, draft, strict=True)
+        ]
+        # The second stage should see the same approved poses as the first.
+        for index, anchor in anchors.items():
+            draft[index] = anchor
     gc.collect()
     ref = clip("reference_image")[0] if "reference_image" in media else anchors[0]
     masks = [m.convert("L") for m in masks]
@@ -136,14 +187,16 @@ def run(folder: Path) -> None:
             "generator": torch.Generator(device="cpu").manual_seed(knobs["seed"] + 1),
         },
         snapshots,
+        knobs["wan_lora_scale"],
     )
+    save_stage("wan_raw", refined)
     output = np.lib.format.open_memmap(
         folder / "frames.npy", mode="w+", dtype=np.uint8, shape=(n, h, w, 3)
     )
     for i in range(n):
-        frame = refined[i]
+        frame = mix(draft[i], refined[i], knobs["wan_mix"]) if guided else refined[i]
         if masks:
-            frame = image.composite(frame, (driving or draft)[i], masks[i])
+            frame = image.composite(frame, (guide or draft)[i], masks[i])
         output[i] = np.asarray(frame.convert("RGB"))[:h, :w]
     output.flush()
 

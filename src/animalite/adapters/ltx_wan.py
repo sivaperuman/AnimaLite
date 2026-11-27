@@ -9,6 +9,7 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -59,6 +60,13 @@ class InferenceControls(Contract):
     wan_steps: int = Field(default=30, ge=1, le=100)
     motion_strength: float = Field(default=0.5, ge=0, le=1)
     wan_conditioning_scale: float = Field(default=1, gt=0, le=3)
+    render_mode: Literal["diffusion", "guided"] = "diffusion"
+    ltx_mix: float = Field(default=0.20, gt=0, le=1)
+    wan_mix: float = Field(default=0.15, gt=0, le=1)
+    residual_limit: int = Field(default=24, ge=1, le=255)
+    ltx_lora_scale: float = Field(default=1.0, ge=0, le=2)
+    wan_lora_scale: float = Field(default=1.0, ge=0, le=2)
+    retain_stages: bool = False
 
 
 def model_profile(bundle: ModelBundle | None) -> EngineProfile:
@@ -71,7 +79,18 @@ def model_profile(bundle: ModelBundle | None) -> EngineProfile:
             ("wan", bundle.wan if bundle else None),
         )
     ]
+    if bundle:
+        for stage, snapshot in (("ltx", bundle.ltx), ("wan", bundle.wan)):
+            if snapshot.lora:
+                weights.append(
+                    ArtifactIdentity(
+                        kind="weights",
+                        identifier=f"{stage}-lora",
+                        content_hash=snapshot.lora.digest,
+                    )
+                )
     return EngineProfile(
+        revision=2,
         profile_id=PROFILE_ID,
         adapter_key=PROFILE_ID,
         display_name="LTX-Video and Wan VACE (CPU research)",
@@ -90,7 +109,7 @@ def model_profile(bundle: ModelBundle | None) -> EngineProfile:
         thread_budget=ThreadBudget(
             total_threads=4, python_threads=1, inference_threads=2, encoder_threads=1
         ),
-        parameters=InferenceControls().model_dump(),
+        parameters=InferenceControls(render_mode="guided").model_dump(),
         weights=weights,
         license_evaluation=LicenseEvaluationRef(
             evaluation_id="ltx-wan-local-snapshots",
@@ -242,7 +261,39 @@ class LtxWanAdapter:
                 )
             )
         try:
-            InferenceControls.model_validate(controls)
+            settings = InferenceControls.model_validate(controls)
+            if bundle:
+                for stage, snapshot, scale in (
+                    ("ltx", bundle.ltx, settings.ltx_lora_scale),
+                    ("wan", bundle.wan, settings.wan_lora_scale),
+                ):
+                    if snapshot.lora is None and scale not in (0, 1):
+                        problems.append(
+                            (
+                                CodeVAL.CONTROL_VALUE_INVALID,
+                                f"Pin a {stage} LoRA before changing its scale.",
+                            )
+                        )
+                    if snapshot.lora is not None and importlib.util.find_spec("peft") is None:
+                        problems.append(
+                            (
+                                CodeVAL.RUNTIME_UNVERIFIED,
+                                "Install the neural extra for LoRA support.",
+                            )
+                        )
+            if settings.render_mode == "diffusion":
+                defaults = InferenceControls()
+                if (settings.ltx_mix, settings.wan_mix, settings.residual_limit) != (
+                    defaults.ltx_mix,
+                    defaults.wan_mix,
+                    defaults.residual_limit,
+                ):
+                    problems.append(
+                        (
+                            CodeVAL.CONTROL_VALUE_INVALID,
+                            "ltx_mix, wan_mix and residual_limit control guided rendering.",
+                        )
+                    )
         except ValidationError as exc:
             problems.append((CodeVAL.CONTROL_VALUE_INVALID, str(exc)))
         return [
@@ -308,6 +359,12 @@ class LtxWanAdapter:
             inference_device="cpu",
             notes=["Worker verified CPU parameter devices for both pipelines."],
         )
+        if controls.render_mode == "guided":
+            source = "control video" if "control_video" in media else "motion-compensated anchors"
+            context.notes.append(
+                f"Guide: {source}. LTX mix {controls.ltx_mix}, Wan mix {controls.wan_mix}, "
+                f"residual limit {controls.residual_limit}/255 per stage."
+            )
         context.notes.append(
             "LTX draft and Wan VACE refinement completed. Approved anchors copied exactly."
         )
