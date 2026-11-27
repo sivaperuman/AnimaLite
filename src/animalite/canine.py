@@ -43,6 +43,14 @@ class BodyDrawing(Contract):
     size_in_trunks: float = Field(gt=0.1, le=4)
 
 
+class LegDrawing(Contract):
+    """Registered 3-by-4 RGBA atlas. Widths are full cell widths in trunk lengths."""
+
+    image: Path
+    fore_width: float = Field(default=0.18, gt=0.02, le=0.5)
+    hind_width: float = Field(default=0.28, gt=0.02, le=0.6)
+
+
 class DogDesign(Contract):
     rig: DogRig = DogRig()
     trunk: float = Field(default=100, ge=40, le=150)
@@ -51,6 +59,7 @@ class DogDesign(Contract):
     shadow: Color = "#c7b8a4"
     marking: Color = "#d7af82"
     collar: Color = "#a13d35"
+    leg_drawing: LegDrawing | None = None
     body_drawings: dict[BodyKey, BodyDrawing] = Field(default_factory=dict)
     head_drawings: dict[Look, dict[View, HeadDrawing]] = Field(default_factory=dict)
 
@@ -88,12 +97,15 @@ class GallopShot(Contract):
     extension: float = Field(default=1.0, ge=0.75, le=1.30, description="Stride-length multiplier")
     camera_follow: float = Field(default=0.78, ge=0, le=1, description="One locks the dog in frame")
     performance: RunAction | None = None
+    guide_name: str | None = Field(default=None, min_length=1)
     handler: LeadHandler | None = None
     backdrop: Path | None = None
     head_cues: list[HeadCue] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def ordered_cues(self) -> GallopShot:
+        if self.guide_name and (not self.performance or self.performance.pose_guide):
+            raise ValueError("a named guide needs a performance without an inline pose guide")
         frames = [cue.frame for cue in self.head_cues]
         if frames != sorted(set(frames)):
             raise ValueError("head cues must increase strictly")
@@ -179,6 +191,12 @@ def running_frame(shot: GallopShot, design: DogDesign, index: int, width: float)
             sample_action(shot.performance, shot.performance.stop_frame, shot.speed).distance
             * length
         )
+        guide = shot.performance.pose_guide
+        touch = (
+            shot.performance.first_touch_frame(guide)
+            if guide and guide.landing.strength > 0
+            else None
+        )
         legs, stretch = articulated_legs(
             legs,
             body,
@@ -191,6 +209,14 @@ def running_frame(shot: GallopShot, design: DogDesign, index: int, width: float)
             floor_y,
             (index - shot.performance.launch_frame) / shot.performance.acceleration_frames,
             1 if action.stage in {"launch", "gallop"} else activity,
+            shot.performance.pose_guide,
+            design.rig.shoulder_height,
+            sample_action(shot.performance, touch, shot.speed).distance * length
+            if touch is not None
+            else None,
+            (touch - shot.performance.launch_frame) / shot.performance.acceleration_frames
+            if touch is not None
+            else 1.56,
         )
     # The camera picks up the subject on entry. The bounded lead room also works in portrait.
     lag = (1 - shot.camera_follow) * width * 0.22 * (1 - exp(-distance / (width * 0.21)))

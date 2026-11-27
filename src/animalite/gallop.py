@@ -32,6 +32,11 @@ class Leg:
     planted: bool
 
 
+def ramp(value: float) -> float:
+    t = min(1.0, max(0.0, value))
+    return t * t * (3 - 2 * t)
+
+
 def stride_length(rig: DogRig, length: float, extension: float = 1.0) -> float:
     return length * (0.88 + 1.52 * min(rig.shoulder_height, rig.hip_height)) * extension
 

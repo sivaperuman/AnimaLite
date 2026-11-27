@@ -30,6 +30,7 @@ from animalite.dog_walk import FRAMES as DOG_WALK_FRAMES
 from animalite.dog_walk import DogWalk
 from animalite.dog_walk_render import render_dog_walk
 from animalite.errors import ValidationRejected
+from animalite.gallop_guide import GallopGuide
 from animalite.media.cadence import AnchorTiming
 from animalite.performance import Mouth, Stage, draw_mouths, render_stage, speech_cues
 from animalite.story_archive import finish_story
@@ -107,6 +108,7 @@ class StoryShot(Contract):
 class Storyboard(Document):
     dogs: dict[str, DogDesign] = Field(default_factory=dict)
     cast: dict[str, CharacterDesign] = Field(default_factory=dict)
+    gallop_guides: dict[str, GallopGuide] = Field(default_factory=dict)
     moves: dict[str, Motion] = Field(default_factory=dict)
     height: Literal[360, 640, 720, 1080, 1280] = 360
     aspect_ratio: Literal["16:9", "9:16"] = "16:9"
@@ -117,6 +119,17 @@ class Storyboard(Document):
     @property
     def width(self) -> int:
         return self.height * 9 // 16 if self.aspect_ratio == "9:16" else self.height * 16 // 9
+
+    def directed_gallop(self, shot: GallopShot) -> GallopShot:
+        if shot.guide_name is None or shot.performance is None:
+            return shot
+        guide = self.gallop_guides.get(shot.guide_name)
+        if guide is None:
+            raise ValueError(f"unknown gallop guide {shot.guide_name}")
+        action = type(shot.performance).model_validate(
+            {**shot.performance.model_dump(), "pose_guide": guide}
+        )
+        return shot.model_copy(update={"performance": action, "guide_name": None})
 
     def directed_stage(self, stage: Stage, frames: int) -> Stage:
         actors = {}
@@ -162,6 +175,8 @@ class Storyboard(Document):
                 "native HD and portrait require staged shots throughout the storyboard"
             )
         for shot in self.shots:
+            if shot.gallop and shot.gallop.guide_name:
+                self.directed_gallop(shot.gallop)
             if shot.gallop and shot.gallop.dog not in self.dogs:
                 raise ValueError(f"unknown dog design {shot.gallop.dog}")
             if shot.gallop and shot.gallop.handler and shot.gallop.handler.actor not in self.cast:
@@ -224,7 +239,7 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
                 )
             video = render_gallop(
                 binary,
-                action,
+                board.directed_gallop(action),
                 dogs[action.dog],
                 shot.seconds,
                 board.width,

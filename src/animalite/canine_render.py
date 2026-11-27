@@ -55,7 +55,12 @@ def retain_design(dog: DogDesign, source_root: Path, run: Path) -> DogDesign:
         )
         for key, art in dog.body_drawings.items()
     }
-    return dog.model_copy(update={"head_drawings": drawings, "body_drawings": body})
+    skin = dog.leg_drawing
+    if skin:
+        skin = skin.model_copy(update={"image": retain_image(skin.image, source_root, run)})
+    return dog.model_copy(
+        update={"head_drawings": drawings, "body_drawings": body, "leg_drawing": skin}
+    )
 
 
 def _uri(file: Path) -> str:
@@ -92,6 +97,11 @@ def render_gallop(
         key: _uri(run / (art.ink_image if shot.look == "ink" and art.ink_image else art.image))
         for key, art in dog.body_drawings.items()
     }
+    skin_uri = (
+        _uri(run / dog.leg_drawing.image)
+        if dog.leg_drawing and shot.look == "painted-anime"
+        else ""
+    )
     virtual_width = width * 360 / height
     zoom = height / 360
     handler = LeadPerformance(shot.handler, actor) if shot.handler and actor else None
@@ -134,7 +144,14 @@ def render_gallop(
                     if h and actor
                     else ""
                 )
-                + dog_art(f, dog, shot, drawings.get(f.head_view, ""), bodies.get(f.body_key(), ""))
+                + dog_art(
+                    f,
+                    dog,
+                    shot,
+                    drawings.get(f.head_view, ""),
+                    bodies.get(f.body_key(), ""),
+                    skin_uri,
+                )
                 + "</svg>"
             )
             (folder / f"{index:04}.svg").write_text(svg, encoding="utf8")

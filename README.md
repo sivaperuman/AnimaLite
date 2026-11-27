@@ -528,3 +528,33 @@ python examples/harbour/render.py work/harbour.mp4
 
 The renderer uses Pycairo and the DejaVu Sans font for drawing. If Pycairo is
 installed in a separate system Python, pass `--drawing-python /usr/bin/python3`.
+
+#### Reference-guided gallop
+
+A storyboard can store a motion guide once in `gallop_guides` and select it in
+any performance shot with `gallop.guide_name`. In the leash-run example the
+same guide drives Pepper and Clover. To apply a guide to one shot in a saved
+run, use a structured `story-revise` edit such as
+`{"shot":2,"guide_name":"leash-sprint"}`. An inline `performance.pose_guide`
+also works for a self-contained shot.
+
+Mark the hip, shoulder, elbow, wrist and paw on a visible foreleg in a side
+view at maximum reach and first landing. Coordinates are source pixels with
+the origin at top left. The solver infers facing, proportions and bend from
+those points. Frame numbers are zero-based. Reach occurs at the end of the
+target acceleration, and the source timing ratio sets the first lead-forepaw
+landing. Each pose has a strength from zero to one. A positive landing strength
+selects the timed contact and blends its placement. During the front view the
+paws step into separate lanes, set by `front_half_width` in trunk lengths and
+`front_strength`. The example uses approximate observations from frames 51 and
+55 of the supplied 144p clip, relative to launch at frame 44. The front-facing
+stance is authored because the handler obscures the reference dog's turn.
+
+Painted characters can supply `leg_drawing.image` and independently set
+`fore_width` and `hind_width` in trunk lengths. Use the transparent
+`examples/leash-run/tan-paws.png` as an atlas template. Its four rows are
+profile foreleg, profile hindleg, front foreleg and front hindleg. Each row
+has upper leg, lower leg and paw in three equal square cells. In a 128-unit
+cell the proximal and distal pivots are (64,24) and (64,104). Register the
+bottom of the paw at the distal pivot. The ink treatment continues to draw
+the same joint tracks. These controls run in the deterministic Studio renderer.

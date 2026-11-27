@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
 from math import pi, sin
 
 from animalite.canine import DogDesign, GallopFrame, GallopShot
@@ -38,8 +39,31 @@ def countryside(width: float, frame: GallopFrame, ink: bool, has_backdrop: bool)
     return "".join(out)
 
 
+def painted_leg(joints: tuple[complex, ...], width: float, row: int, facing: int, far: bool) -> str:
+    """Pose the three painted pieces. The paw keeps a horizontal sole."""
+    out = ['<g filter="url(#farLeg)">' if far else "<g>"]
+    for column, (a, b) in enumerate(pairwise(joints)):
+        axis = (b - a) / 80
+        # The transverse direction follows the bone, except at the planted sole.
+        cross = complex(1, 0) if column == 2 else -1j * axis / max(abs(axis), 1e-8)
+        cross *= facing * width / 128
+        origin = a - cross * 64 - axis * 24
+        out.append(
+            f'<g transform="matrix({cross.real:.5f} {cross.imag:.5f} '
+            f'{axis.real:.5f} {axis.imag:.5f} {origin.real:.4f} {origin.imag:.4f})">'
+            f'<svg width="128" height="128" viewBox="{column * 128} {row * 128} 128 128" '
+            'overflow="hidden"><use xlink:href="#legAtlas"/></svg></g>'
+        )
+    return "".join(out) + "</g>"
+
+
 def dog_art(
-    frame: GallopFrame, dog: DogDesign, shot: GallopShot, head_uri: str, body_uri: str = ""
+    frame: GallopFrame,
+    dog: DogDesign,
+    shot: GallopShot,
+    head_uri: str,
+    body_uri: str = "",
+    skin_uri: str = "",
 ) -> str:
     ink = shot.look == "ink"
     grey = dog.shadow if not ink else "#eee9de"
@@ -64,9 +88,33 @@ def dog_art(
     ]
     # Draw only the articulated lower limbs as strokes. Their anchors and contact
     # pad centers map back to the same exported skeleton in either style.
-    for i, leg in enumerate(frame.legs):
+    if skin_uri:
+        out.append(
+            f'<defs><image id="legAtlas" width="384" height="512" preserveAspectRatio="none" '
+            f'xlink:href="{skin_uri}"/><filter id="farLeg" color-interpolation-filters="sRGB">'
+            '<feColorMatrix type="matrix" '
+            'values=".75 0 0 0 0  0 .72 0 0 0  0 0 .72 0 0  0 0 0 1 0"/>'
+            "</filter></defs>"
+        )
+    guided_turn = bool(
+        shot.performance
+        and shot.performance.pose_guide
+        and shot.performance.pose_guide.front_strength
+    )
+    order = (0, 2, 1, 3) if guided_turn and 0.36 <= frame.turn <= 0.64 else (0, 1, 2, 3)
+    for i in order:
+        leg = frame.legs[i]
         a, b, c, d = (local(p) for p in (leg.root, leg.joint, leg.ankle, leg.tip))
         far = i < 2
+        if skin_uri and dog.leg_drawing:
+            fore = i % 2 == 1
+            row = (0 if fore else 1) + (2 if 0.36 <= frame.turn <= 0.64 else 0)
+            width = dog.leg_drawing.fore_width if fore else dog.leg_drawing.hind_width
+            facing = 1 if frame.turn <= 0.5 or row >= 2 else -1
+            out.append(
+                painted_leg((a, b, c, d), 100 * width * (0.9 if far else 1), row, facing, far)
+            )
+            continue
         thick = (6.0 if hound else 7.8) * (0.87 if far else 1)
         legcolor = grey if far else coat
         top = f"M{xy(a)}L{xy(b)}"

@@ -48,6 +48,8 @@ def index_story(root: Path, board: Storyboard, clips: list[Path]) -> StoryIndex:
     if any(s.dialogue for s in board.shots):
         files.add(Path("dialogue.wav"))
     for d in board.dogs.values():
+        if d.leg_drawing:
+            files.add(d.leg_drawing.image)
         files.update(a.image for views in d.head_drawings.values() for a in views.values())
         for a in d.body_drawings.values():
             files.add(a.image)

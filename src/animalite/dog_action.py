@@ -9,15 +9,12 @@ from pydantic import Field, model_validator
 
 from animalite.contracts.base import Contract
 from animalite.gallop import Leg, bend_joint
+from animalite.gallop import ramp as ramp
+from animalite.gallop_guide import GallopGuide
 
 
 def unit(value: float) -> float:
     return min(1.0, max(0.0, value))
-
-
-def ramp(value: float) -> float:
-    t = unit(value)
-    return t * t * (3 - 2 * t)
 
 
 class RunAction(Contract):
@@ -26,6 +23,17 @@ class RunAction(Contract):
     brake_frame: int = Field(ge=0)
     braking_frames: int = Field(ge=2)
     turn_frames: int = Field(default=16, ge=6)
+
+    pose_guide: GallopGuide | None = None
+
+    def first_touch_frame(self, guide: GallopGuide) -> int:
+        source_ratio = (guide.landing.frame - guide.launch_frame) / (
+            guide.reach.frame - guide.launch_frame
+        )
+        # Reserve at least one frame after reach, including very short launches.
+        return self.launch_frame + max(
+            self.acceleration_frames + 1, round(self.acceleration_frames * source_ratio)
+        )
 
     @property
     def stop_frame(self) -> int:
@@ -39,6 +47,8 @@ class RunAction(Contract):
     def ordered(self) -> RunAction:
         if self.launch_frame + self.acceleration_frames > self.brake_frame:
             raise ValueError("acceleration must finish before braking")
+        if self.pose_guide and self.first_touch_frame(self.pose_guide) >= self.brake_frame:
+            raise ValueError("guided forepaw landing must precede braking")
         return self
 
 
@@ -86,6 +96,8 @@ def stance_foot(
     length: float,
     height: float,
     floor: float,
+    fore_shift: float = 0.0,
+    first_touch: float | None = None,
 ) -> tuple[complex, bool]:
     """Connect the parked footprints to complete stance intervals in travel coordinates."""
     shift = (0.55, 0.09, 0.66, 0.20)[index]
@@ -95,12 +107,25 @@ def stance_foot(
     previous_end, previous_x = start_hold, offset
     if distance <= start_hold:
         return complex(offset, floor), True
+    if first_touch is not None and index % 2:
+        # Lead paw arrives at the anchored frame. Stagger its partner slightly.
+        lead = first_touch + (0.055 * stride if index == 1 else 0)
+        first_x = offset + lead + 0.15 * stride + 0.075 * length + fore_shift
+        release = min(lead + 0.23 * stride, end_hold)
+        if start_hold < lead < release:
+            if distance < lead:
+                return swing_foot(distance, start_hold, offset, lead, first_x, height * 0.52, floor)
+            if distance <= release:
+                return complex(first_x, floor), True
+            previous_end, previous_x = release, first_x
     for k in range(ceil(total / stride) + 2):
         begin = (k - shift) * stride
         end = begin + 0.30 * stride
-        if begin < start_hold + 0.18 * stride or end > end_hold - 0.18 * stride:
+        if begin < previous_end + 0.18 * stride or end > end_hold - 0.18 * stride:
             continue
         contact = offset + begin + 0.15 * stride + (1 if index % 2 else -1) * 0.075 * length
+        if index % 2:
+            contact += fore_shift
         if distance < begin:
             break
         if distance <= end:
@@ -110,8 +135,28 @@ def stance_foot(
         begin, contact = end_hold, total + offset
     if distance >= end_hold:
         return complex(total + offset, floor), True
+    return swing_foot(
+        distance,
+        previous_end,
+        previous_x,
+        begin,
+        contact,
+        height * (0.52 if index % 2 else 0.64),
+        floor,
+    )
+
+
+def swing_foot(
+    distance: float,
+    previous_end: float,
+    previous_x: float,
+    begin: float,
+    contact: float,
+    height: float,
+    floor: float,
+) -> tuple[complex, bool]:
     t = unit((distance - previous_end) / (begin - previous_end))
-    clearance = min(height * (0.52 if index % 2 else 0.64), 0.48 * abs(contact - previous_x))
+    clearance = min(height, 0.48 * abs(contact - previous_x))
     x = previous_x + (contact - previous_x) * (
         t**3 * (10 - 15 * t + 6 * t * t) - 0.065 * sin(2 * pi * t) * sin(pi * t) ** 2
     )
@@ -137,8 +182,18 @@ def articulated_legs(
     floor_y: float,
     launch_phase: float,
     bound_strength: float,
+    guide: GallopGuide | None = None,
+    shoulder_height: float = 0.55,
+    first_touch: float | None = None,
+    landing_beat: float = 1.56,
 ) -> tuple[tuple[Leg, ...], float]:
     result = []
+    fore_shift = 0.0
+    if guide:
+        default_touchdown = 0.15 * stride + 0.075 * length
+        fore_shift = guide.landing.strength * (
+            guide.touchdown_offset(shoulder_height) * length - default_touchdown
+        )
     footprints = [
         stance_foot(
             body.real,
@@ -149,6 +204,8 @@ def articulated_legs(
             length,
             floor_y - leg.root.imag,
             floor_y,
+            fore_shift,
+            first_touch,
         )
         for i, leg in enumerate(legs)
     ]
@@ -157,12 +214,30 @@ def articulated_legs(
         Leg(leg.root, leg.joint, foot + leg.ankle - leg.tip, foot, planted)
         for leg, (foot, planted) in zip(legs, footprints, strict=True)
     )
-    projected = launch_bound(projected, length, launch_phase, bound_strength)
+    bound_beat = launch_phase
+    if first_touch is not None and launch_phase > 1:
+        bound_beat = 1 + (launch_phase - 1) * 0.56 / (landing_beat - 1)
+    projected = launch_bound(projected, length, bound_beat, bound_strength)
     stretch = back_shape(projected, length, activity)
     yaw = cos(pi * turn)
+    pivot_feet = (
+        [guide.pivot(leg.tip, body.real, length, turn, i) for i, leg in enumerate(projected)]
+        if guide and guide.front_strength and turn > 0
+        else []
+    )
     for i, leg in enumerate(legs):
         dx = leg.root.real - body.real
         depth = (-1 if i < 2 else 1) * 0.095 * length * sin(pi * turn)
+        if pivot_feet and guide and turn > 0.80:
+            # As the two shoulders exchange depth, keep their projected order in
+            # step with the footprints. Their midpoint stays attached to the torso.
+            far, near = i % 2, i % 2 + 2
+            span = (legs[near].root.real - legs[far].root.real) * stretch * yaw
+            span += 0.19 * length * sin(pi * turn)
+            sole_span = pivot_feet[near][0].real - pivot_feet[far][0].real
+            visible_span = min(0.07 * length, max(-0.07 * length, sole_span))
+            blend = ramp((turn - 0.80) / 0.10) * guide.front_strength
+            depth += (0.5 if i == near else -0.5) * blend * (visible_span - span)
         root = body + complex(dx * stretch * yaw + depth, leg.root.imag - body.imag + dx * pitch)
         # Diagonal pairs exchange support while turning through the front view.
         step = unit((turn - (0 if i in (0, 3) else 0.44)) / 0.56)
@@ -175,6 +250,12 @@ def articulated_legs(
         )
         if step == 0:
             tip = foot
+        contact = planted and not 0 < step < 1
+        if pivot_feet and guide:
+            pivot, pivot_contact = pivot_feet[i]
+            w = guide.front_strength
+            tip = pivot if w == 1 else tip + w * (pivot - tip)
+            contact = pivot_contact and (w == 1 or contact)
         ankle = tip + complex((placed.ankle - foot).real * yaw, (placed.ankle - foot).imag)
         reach = abs(leg.joint - leg.root) + abs(leg.ankle - leg.joint)
         side = (1 if i % 2 else -1) * (1 if yaw >= 0 else -1)
@@ -182,7 +263,11 @@ def articulated_legs(
         # At front view the knee projects toward the camera instead of popping sideways.
         midpoint = (root + ankle) * 0.5
         joint = midpoint + (joint - midpoint) * abs(yaw)
-        result.append(Leg(root, joint, ankle, tip, planted and not 0 < step < 1))
+        posed = Leg(root, joint, ankle, tip, contact)
+        if guide and i % 2 and turn == 0:
+            phase = (body.real / stride + (0.09 if i == 1 else 0.20)) % 1
+            posed = guide.foreleg(posed, length, floor_y, launch_phase, phase, activity)
+        result.append(posed)
     return tuple(result), stretch
 
 

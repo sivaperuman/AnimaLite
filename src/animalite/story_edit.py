@@ -15,6 +15,7 @@ from animalite.canine_render import render_gallop
 from animalite.contracts.base import Document, sha256_file
 from animalite.core.service import LocalExecutionService
 from animalite.errors import ValidationRejected
+from animalite.gallop_guide import GallopGuide
 from animalite.story import Storyboard
 from animalite.story_archive import StoryIndex, clip_paths, finish_story, index_story, retained_file
 
@@ -29,9 +30,13 @@ class ShotEdit(Document):
     surprise_hold_frames: int | None = Field(default=None, ge=0, le=120)
     speed: float | None = Field(default=None, ge=0.8, le=5)
     head_cues: list[HeadCue] | None = None
+    pose_guide: GallopGuide | None = None
+    guide_name: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def changed(self) -> ShotEdit:
+        if self.pose_guide and self.guide_name:
+            raise ValueError("choose one pose guide")
         if not self.changes():
             raise ValueError("specify at least one shot control")
         return self
@@ -75,7 +80,13 @@ def apply_edit(board: Storyboard, edit: ShotEdit) -> Storyboard:
     data = board.model_dump(mode="json")
     action = data["shots"][edit.shot - 1]["gallop"]
     for key, value in edit.changes().items():
-        if key in {"head_cues", "speed"}:
+        if key == "guide_name" and shot.performance:
+            action["performance"]["pose_guide"] = None
+            action["guide_name"] = value
+        elif key == "pose_guide" and shot.performance:
+            action["guide_name"] = None
+            action["performance"]["pose_guide"] = value
+        elif key in {"head_cues", "speed"}:
             action[key] = value
         elif key == "surprise_hold_frames" and shot.handler:
             action["handler"][key] = value
@@ -134,7 +145,7 @@ def revise_story(
             if (root / rel).is_file():
                 shutil.copyfile(retained_file(root, rel), run / rel)
     service = LocalExecutionService(run / "jobs")
-    g = shot_action(revised, edit.shot)
+    g = revised.directed_gallop(shot_action(revised, edit.shot))
     video = render_gallop(
         service.tools.ffmpeg_path,
         g,

@@ -80,6 +80,11 @@
           "anchor_y": 0.76431,
           "size_in_trunks": 1.28
         }
+      },
+      "leg_drawing": {
+        "image": "tan-paws.png",
+        "fore_width": 0.18,
+        "hind_width": 0.29
       }
     }
   },
@@ -103,7 +108,8 @@
           "actor": "Milo",
           "leash_length": 1.16,
           "surprise_hold_frames": 12
-        }
+        },
+        "guide_name": "leash-sprint"
       }
     },
     {
@@ -126,7 +132,8 @@
           "leash_length": 1.16,
           "surprise_hold_frames": 12
         },
-        "backdrop": "promenade.jpg"
+        "backdrop": "promenade.jpg",
+        "guide_name": "leash-sprint"
       }
     },
     {
@@ -149,8 +156,31 @@
           "leash_length": 1.16,
           "surprise_hold_frames": 12
         },
-        "backdrop": "promenade.jpg"
+        "backdrop": "promenade.jpg",
+        "guide_name": "leash-sprint"
       }
     }
-  ]
+  ],
+  "gallop_guides": {
+    "leash-sprint": {
+      "launch_frame": 44,
+      "reach": {
+        "frame": 51,
+        "hip": [79, 189],
+        "shoulder": [101, 192],
+        "elbow": [107, 198],
+        "wrist": [115, 204],
+        "paw": [117, 207]
+      },
+      "landing": {
+        "frame": 55,
+        "hip": [78, 192],
+        "shoulder": [93, 196],
+        "elbow": [91, 202],
+        "wrist": [91, 211],
+        "paw": [93, 214]
+      },
+      "front_half_width": 0.145
+    }
+  }
 }
