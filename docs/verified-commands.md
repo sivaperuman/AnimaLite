@@ -680,3 +680,33 @@ displacement after subtracting camera motion was 0.25 output pixels, and the
 With the same motion solver, the 144 × 256 opening-frame experiment preserved
 the first decoded reference picture. Mean luma SSIM over the other 239 frames
 was 0.46952, compared with 0.46971 for the preceding render.
+
+## Launch, leash response, painted turns and shot revision
+
+The 22-second `examples/leash-run/story.json` was rendered using the documented
+`story-render` command. The first ten seconds use Pepper and Milo. The next
+two six-second shots use Clover and Rae, with identical paw tracks in painted
+anime and ink. Across those three takes the largest displacement between
+consecutive supported paw positions was below 1e-9 scene pixels. The exported
+grip and collar matched the rendered lead's two control endpoints on every
+frame. These values describe the rig geometry. In a separate launch retiming
+test, moving launch eight frames later moved the first strong pull eight frames
+later. Strong pull here means a tension value above 0.65.
+
+Applying “make the launch quicker and hold the surprised look longer” to
+shot 2 shortened the acceleration from seven frames to five. The first strong
+pull moved from frame 23 to 22. The final frame with surprise above half
+intensity moved from 122 to 134. The clip digests for shots 1 and 3 matched
+their originals. A fresh render of the revised storyboard reproduced the
+entire edited movie byte for byte. A separate two-shot test exercised retained
+dialogue as well as the refusal to reuse a modified clip.
+
+The opening-frame experiment also used the suspended first stride on the
+uploaded 144 × 256 development clip. Visual inspection put maximum dog
+extension around frames 50–53 and the first forepaw landing around 54–55.
+The revised motion reached maximum launch extension at 50–51 and recorded
+forepaw stance at 55. The opening picture matched exactly. Mean luma SSIM
+over frames 1–239 changed from 0.469517 to 0.469779, and from 0.346911 to
+0.347549 over frames 48–144. The reference cutout retains the original
+shot-specific character blocking. The reusable handler is evaluated
+separately in the staged shots.

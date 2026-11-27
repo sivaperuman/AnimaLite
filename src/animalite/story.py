@@ -31,8 +31,8 @@ from animalite.dog_walk import DogWalk
 from animalite.dog_walk_render import render_dog_walk
 from animalite.errors import ValidationRejected
 from animalite.media.cadence import AnchorTiming
-from animalite.media.probe import probe_output, validate_output
 from animalite.performance import Mouth, Stage, draw_mouths, render_stage, speech_cues
+from animalite.story_archive import finish_story
 from animalite.story_media import (
     AUDIO_RATE,
     Camera,
@@ -41,7 +41,6 @@ from animalite.story_media import (
     ffmpeg,
     frame_shot,
     mix_shot,
-    verify_dialogue,
 )
 
 
@@ -73,6 +72,11 @@ class StoryShot(Contract):
                 raise ValueError(
                     "use gallop.camera_follow and gallop.speed to direct the camera and pace"
                 )
+            if (
+                self.gallop.performance
+                and self.gallop.performance.settled_frame >= self.seconds * 24
+            ):
+                raise ValueError("gallop performance extends beyond the shot")
             if any(cue.frame >= self.seconds * 24 for cue in self.gallop.head_cues):
                 raise ValueError("gallop head cue extends beyond the shot")
         elif self.dog_walk:
@@ -160,6 +164,8 @@ class Storyboard(Document):
         for shot in self.shots:
             if shot.gallop and shot.gallop.dog not in self.dogs:
                 raise ValueError(f"unknown dog design {shot.gallop.dog}")
+            if shot.gallop and shot.gallop.handler and shot.gallop.handler.actor not in self.cast:
+                raise ValueError(f"unknown handler {shot.gallop.handler.actor}")
             if shot.stage:
                 self.directed_stage(shot.stage, shot.seconds * 24)
             for line in shot.dialogue:
@@ -185,9 +191,8 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
     }
     service = LocalExecutionService(run / "jobs")
     binary = service.tools.ffmpeg_path
-    playlist: list[str] = []
+    playlist: list[Path] = []
     voiced_shots: list[StoryShot] = []
-    audio_args: list[str] = []
     has_dialogue = any(shot.dialogue for shot in board.shots)
     if has_dialogue:
         soundtrack = run / "dialogue.wav"
@@ -205,18 +210,6 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
                     track,
                 )
                 voiced_shots.append(shot.model_copy(update={"dialogue": lines}))
-        audio_args = [
-            "-i",
-            str(soundtrack),
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-        ]
     for number, shot in enumerate(voiced_shots if has_dialogue else board.shots, 1):
         cues = (
             speech_cues(run, shot.dialogue, shot.seconds)
@@ -238,16 +231,17 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
                 board.height,
                 run,
                 run / f"gallop-{number}",
+                board.cast[action.handler.actor] if action.handler else None,
             )
             prepared_shots.append(shot.model_copy(update={"gallop": action}))
-            playlist.append(f"file '{video.relative_to(run).as_posix()}'")
+            playlist.append(video.relative_to(run))
             continue
         if shot.dog_walk:
             video = render_dog_walk(
                 binary, shot.dog_walk, shot.seconds, board.width, run / f"dog-walk-{number}", cues
             )
             prepared_shots.append(shot)
-            playlist.append(f"file '{video.relative_to(run).as_posix()}'")
+            playlist.append(video.relative_to(run))
             continue
         if shot.stage is not None:
             video, stage = render_stage(
@@ -263,7 +257,7 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
                 board.width,
             )
             prepared_shots.append(shot.model_copy(update={"stage": stage}))
-            playlist.append(f"file '{video.relative_to(run).as_posix()}'")
+            playlist.append(video.relative_to(run))
             continue
         anchors = []
         prepared_poses: list[Pose] = []
@@ -344,44 +338,6 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
             shot.camera,
             shot.seconds,
         ).relative_to(run)
-        playlist.append(f"file '{clip.as_posix()}'")
-    (run / "storyboard.json").write_text(
-        board.model_copy(update={"shots": prepared_shots, "dogs": dogs}).model_dump_json(indent=2),
-        encoding="utf-8",
-    )
-    listing = run / "shots.ffconcat"
-    listing.write_text("\n".join(playlist) + "\n", encoding="utf-8")
-    pending = run / "unverified.mp4"
-    ffmpeg(
-        binary,
-        [
-            "-f",
-            "concat",
-            "-safe",
-            "1",
-            "-i",
-            str(listing),
-            *audio_args,
-            "-c:v",
-            "copy",
-            "-movflags",
-            "+faststart",
-            str(pending),
-        ],
-    )
-    expected = P_L_FINAL_OUTPUT.model_copy(
-        update={
-            "width": board.width,
-            "codec_level": "4.1" if board.height == 1080 else "3.1",
-            "height": board.height,
-            "animation_frame_count": sum(
-                shot.seconds * P_L_FINAL_OUTPUT.cadence.animation_fps for shot in board.shots
-            ),
-        }
-    )
-    issues = validate_output(probe_output(service.tools, pending), expected)
-    if issues:
-        raise ValidationRejected("; ".join(issues))
-    if has_dialogue:
-        verify_dialogue(service.tools, pending, sum(shot.seconds for shot in board.shots))
-    return pending.rename(run / "story.mp4")
+        playlist.append(clip)
+    prepared = board.model_copy(update={"shots": prepared_shots, "dogs": dogs})
+    return finish_story(run, prepared, playlist, service.tools)

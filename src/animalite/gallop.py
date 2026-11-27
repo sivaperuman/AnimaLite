@@ -36,7 +36,7 @@ def stride_length(rig: DogRig, length: float, extension: float = 1.0) -> float:
     return length * (0.88 + 1.52 * min(rig.shoulder_height, rig.hip_height)) * extension
 
 
-def _bend(root: complex, ankle: complex, reach: float, side: int) -> complex:
+def bend_joint(root: complex, ankle: complex, reach: float, side: int) -> complex:
     axis = ankle - root
     span = abs(axis)
     if span < 1e-8:
@@ -88,7 +88,7 @@ def gallop_legs(
         lift = active * (1 - settle) * clearance * sin(pi * swing) ** 1.5
         tip = complex(foot_x, ground(foot_x) - lift)
         ankle = tip + complex(-0.094 * length, -0.12 * height * length)
-        joint = _bend(
+        joint = bend_joint(
             root, ankle, length * hypot(0.91 * height, 0.56 * extension), 1 if fore else -1
         )
         planted = active == 0 or (active == 1 and (phase <= support or settle == 1))

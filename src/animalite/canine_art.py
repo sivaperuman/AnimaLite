@@ -38,7 +38,9 @@ def countryside(width: float, frame: GallopFrame, ink: bool, has_backdrop: bool)
     return "".join(out)
 
 
-def dog_art(frame: GallopFrame, dog: DogDesign, shot: GallopShot, head_uri: str) -> str:
+def dog_art(
+    frame: GallopFrame, dog: DogDesign, shot: GallopShot, head_uri: str, body_uri: str = ""
+) -> str:
     ink = shot.look == "ink"
     grey = dog.shadow if not ink else "#eee9de"
     coat = dog.coat if not ink else "#fffdf6"
@@ -82,6 +84,63 @@ def dog_art(frame: GallopFrame, dog: DogDesign, shot: GallopShot, head_uri: str)
                 )
             )
         out.append(ellipse(d - 1.8j, 3.9 if hound else 4.35, 1.8, outline))
+    if body_uri:
+        key = frame.body_key()
+        art = dog.body_drawings[key]
+        size = 100 * art.size_in_trunks
+        pin = local(frame.collar(dog))
+        sign = 1 if frame.turn <= 0.5 or key == "front" else -1
+        width_scale = (frame.stretch if key in ("extended", "compressed") else 1) * sign
+        color_filter = ""
+        if ink and not art.ink_image:
+            out.append(
+                '<defs><filter id="inkCel" color-interpolation-filters="sRGB">'
+                '<feColorMatrix type="saturate" values="0"/>'
+                "<feComponentTransfer>"
+                + "".join(
+                    f'<feFunc{c} type="table" tableValues=".12 .23 .61 .84 .94 .98 1"/>'
+                    for c in "RGB"
+                )
+                + "</feComponentTransfer></filter></defs>"
+            )
+            color_filter = ' filter="url(#inkCel)"'
+        out.append(
+            f'<g transform="translate({xy(pin)}) '
+            f'matrix({width_scale:.4f} {frame.pitch:.4f} 0 1 0 0)">'
+            f'<image x="{-art.anchor_x * size:.3f}" y="{-art.anchor_y * size:.3f}" '
+            f'width="{size}" height="{size}" xlink:href="{body_uri}"{color_filter}/></g></g>'
+        )
+        return "".join(out)
+    if 0.28 <= frame.turn <= 0.72:
+        pin = local(frame.collar(dog))
+        out.extend(
+            (
+                ellipse(0j, 22, 23, outline),
+                ellipse(0j, 20, 21, coat),
+                ellipse(pin - 14j, 23, 21, outline),
+                ellipse(pin - 14j, 21.5, 19.5, coat),
+            )
+        )
+        for sign in (-1, 1):
+            ear_center = pin + complex(sign * 19, -22)
+            out.extend(
+                (
+                    ellipse(ear_center, 7, 11, outline),
+                    ellipse(ear_center, 5.8, 9.5, grey),
+                    ellipse(pin + complex(sign * 8, -16), 2.1, 2.8, outline),
+                )
+            )
+        out.extend(
+            (
+                ellipse(pin - 8j, 4, 3, outline),
+                path(f"M{xy(pin - 10 + 1j)}q9 5 19 0", dog.collar, 3),
+                ellipse(pin, 1.9, 2.3, "#bf9252"),
+                "</g>",
+            )
+        )
+        return "".join(out)
+    # Limb points are already projected. The same deformation places the spine and neck.
+    out.append(f'<g transform="matrix({frame.yaw * frame.stretch:.5f} {frame.pitch:.5f} 0 1 0 0)">')
     flick = 5 * sin(stride - 0.7)
     tilt = 3.8 * sin(stride + 0.2)
     if hound:
@@ -182,5 +241,5 @@ def dog_art(frame: GallopFrame, dog: DogDesign, shot: GallopShot, head_uri: str)
     out.append(path(f"M{xy(neck - 10 + 9j)}q8 5 19 0", outline, 5.1))
     out.append(path(f"M{xy(neck - 10 + 9j)}q8 5 19 0", dog.collar, 3.3))
     out.append(ellipse(neck + 5 + 14j, 1.6, 2.55, "#bf9252"))
-    out.append("</g>")
+    out.append("</g></g>")
     return "".join(out)

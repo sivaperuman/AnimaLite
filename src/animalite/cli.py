@@ -240,8 +240,27 @@ def cmd_render(args: argparse.Namespace) -> int:
 
 def cmd_story_schema(args: argparse.Namespace) -> int:
     """Expose the same shot and cast contract that story-render validates."""
-    print(json.dumps(Storyboard.model_json_schema(), indent=2))
+    from animalite.story_edit import ShotEdit
+
+    print(json.dumps((ShotEdit if args.edit else Storyboard).model_json_schema(), indent=2))
     return 0
+
+
+def cmd_story_revise(args: argparse.Namespace) -> int:
+    from animalite.story_edit import revise_story
+
+    try:
+        movie = revise_story(
+            args.parent,
+            args.workspace,
+            edit_file=args.edit,
+            instruction=args.instruction,
+            shot_number=args.shot,
+        )
+    except (ValidationError, OSError) as exc:
+        raise ValidationRejected(str(exc)) from exc
+    print(movie)
+    return EXIT_OK
 
 
 def cmd_story_render(args: argparse.Namespace) -> int:
@@ -886,7 +905,18 @@ def build_parser() -> argparse.ArgumentParser:
     schema = sub.add_parser(
         "story-schema", help="print the storyboard JSON schema for interactive direction"
     )
+    schema.add_argument("--edit", action="store_true", help="print the single-shot edit schema")
     schema.set_defaults(func=cmd_story_schema)
+    revision = sub.add_parser(
+        "story-revise", help="re-render one directed shot in a retained story"
+    )
+    revision.add_argument("parent", type=Path, help="previous run directory or its movie")
+    revision.add_argument("--workspace", type=Path, default=Path("work/stories"))
+    source = revision.add_mutually_exclusive_group(required=True)
+    source.add_argument("--edit", type=Path, help="JSON document matching story-schema --edit")
+    source.add_argument("--instruction", help="bounded local English timing instruction")
+    revision.add_argument("--shot", type=int, help="one-based shot for --instruction")
+    revision.set_defaults(func=cmd_story_revise)
     story = sub.add_parser("story-render", help="render generated story poses and join shots")
     story.add_argument("storyboard", type=Path)
     story.add_argument("--workspace", type=Path, default=Path("work/stories"))

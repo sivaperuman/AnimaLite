@@ -10,6 +10,7 @@ import numpy as np
 from scipy.spatial import Delaunay
 from street import Panorama
 
+from animalite.dog_action import back_shape
 from animalite.dog_walk import DogWalk, pose
 from animalite.dog_walk_art import project
 
@@ -612,6 +613,8 @@ class OpeningRig:
         stride = ease(run, 0.08, 0.70)
         self.mesh.art = cv.addWeighted(full_art, 1 - stride, bare_art, stride, 0)
 
+        stretch = back_shape(state.legs, 56, run)
+
         def positions(side):
             pts = self.mesh.points.copy() - DOG_CENTER
             for j, (pt, group) in enumerate(zip(self.mesh.points, self.mesh.groups, strict=True)):
@@ -631,7 +634,9 @@ class OpeningRig:
                 pts[j, 1] += f.dog_sit * hind * max(0, 1 - abs(pt[1] - 196) / 23) * 10.5
                 if group in ("paw0", "paw2"):
                     pts[j, 0] += f.dog_sit * (3.8 + 2.3 * np.clip((pt[1] - 202) / 11, 0, 1))
-            pts[:, 0] *= side * width * (1 + 0.12 * activity) * zoom
+            # Flex the back about the collar, preserving the leash attachment.
+            pts[:, 0] = 10 + (pts[:, 0] - 10) * stretch
+            pts[:, 0] *= side * width * zoom
             pts[:, 1] *= zoom * (1 - 0.045 * activity)
             return pts + ctr
 

@@ -470,6 +470,47 @@ four generated head drawings and a painted countryside background. Paths are
 relative to the storyboard. Each run saves the referenced artwork alongside
 its replayable `storyboard.json`.
 
+### Join actions and revise one shot from chat
+
+The [leash-run storyboard](examples/leash-run/story.json) directs Pepper and Milo
+through a sprint, then reuses the action for Clover and Rae on a coastal promenade
+in painted anime and ink. Each performance starts at rest and passes through acceleration,
+gallop, braking, a stepping half-turn and a settled hold.
+
+```bash
+animalite story-render examples/leash-run/story.json --workspace work/stories
+animalite story-schema --edit
+animalite story-revise <previous-run> --workspace work/stories --shot 2 \
+  --instruction "make the launch quicker and hold the surprised look longer"
+```
+
+All motion frame numbers are zero-based at 24 fps. The edit's shot number
+is one-based. The example direction shortens acceleration from seven frames
+to five and extends the surprise hold from 12 frames to 24. ChatGPT can use
+the edit schema for precise changes to launch, acceleration, speed, braking,
+turn duration, head cues and the surprise hold. Pass a JSON file with
+`--edit`, for example `{"shot":2,"launch_frame":26,"surprise_hold_frames":24}`.
+The offline English command also accepts “start the launch 8 frames later”.
+It rejects an unrecognized instruction as a whole.
+
+A shot's `handler.actor` selects an existing cast design. Set `handler.hand`
+to `left` or `right` and measure `leash_length` in dog trunk lengths. The
+grip and collar determine the curve of the lead. Its tension drives the
+handler's arm, lean, foot lift and expression. A new `dogs` entry can register
+four transparent body drawings named `extended`, `compressed`, `quarter`
+and `front`. Each combines a painted trunk, head and tail with four separately
+animated legs. Register the brass tag or other collar attachment in each
+square image with `anchor_x` and `anchor_y` fractions. A drawing can supply
+its own `ink_image` or use the ink rendition of the painted cel.
+
+Revisions create a fresh run, retain the source artwork and audio, render the
+selected shot and copy the other encoded shots. `revision.json` lists which
+shots were reused. `shot-index.json` records the input and clip hashes for
+the next edit. Older runs with the complete storyboard, playlist, assets and
+encoded shots can establish this index on their first revision. To regenerate
+the revised movie from its drawings, pass its `storyboard.json` to
+`story-render`.
+
 ### Harbour 2D performance demo
 
 Milo waves, walks to the bus, calls out to Max, then runs to hand over a lunchbox.

@@ -10,10 +10,12 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
-from animalite.canine import DogDesign, GallopFrame, GallopShot, View, running_frame
+from animalite.canine import BodyKey, DogDesign, GallopFrame, GallopShot, View, running_frame
 from animalite.canine_art import countryside, dog_art
 from animalite.canine_plate import RunningLane
+from animalite.choreography import CharacterDesign
 from animalite.contracts.base import sha256_file
+from animalite.dog_handler import LeadPerformance, draw_handler
 from animalite.dog_walk_art import ellipse
 from animalite.errors import JobTimeoutError, ValidationRejected
 from animalite.proc import run_capture
@@ -42,7 +44,18 @@ def retain_design(dog: DogDesign, source_root: Path, run: Path) -> DogDesign:
         }
         for look, views in dog.head_drawings.items()
     }
-    return dog.model_copy(update={"head_drawings": drawings})
+    body = {
+        key: art.model_copy(
+            update={
+                "image": retain_image(art.image, source_root, run),
+                "ink_image": retain_image(art.ink_image, source_root, run)
+                if art.ink_image
+                else None,
+            }
+        )
+        for key, art in dog.body_drawings.items()
+    }
+    return dog.model_copy(update={"head_drawings": drawings, "body_drawings": body})
 
 
 def _uri(file: Path) -> str:
@@ -59,6 +72,7 @@ def render_gallop(
     height: int,
     run: Path,
     folder: Path,
+    actor: CharacterDesign | None = None,
 ) -> Path:
     folder.mkdir()
     deadline = time.monotonic() + 180
@@ -74,8 +88,13 @@ def render_gallop(
         key: _uri(run / drawing.image)
         for key, drawing in dog.head_drawings.get(shot.look, {}).items()
     }
+    bodies: dict[BodyKey, str] = {
+        key: _uri(run / (art.ink_image if shot.look == "ink" and art.ink_image else art.image))
+        for key, art in dog.body_drawings.items()
+    }
     virtual_width = width * 360 / height
     zoom = height / 360
+    handler = LeadPerformance(shot.handler, actor) if shot.handler and actor else None
     with ExitStack() as stack:
         scratch = Path(stack.enter_context(tempfile.TemporaryDirectory(dir=folder)))
         rgb = scratch / "backdrop.rgb"
@@ -85,6 +104,8 @@ def render_gallop(
             if time.monotonic() >= deadline:
                 raise JobTimeoutError(f"gallop exceeded the shot deadline at frame {index}")
             f = running_frame(shot, dog, index, virtual_width)
+
+            h = handler.advance(f, dog, index) if handler else None
 
             def pixels(point: complex, state: GallopFrame = f) -> list[float]:
                 pt = state.screen(point) * zoom
@@ -102,7 +123,18 @@ def render_gallop(
                 f'width="{width}" height="{height}" viewBox="0 0 {virtual_width} 360">'
                 + countryside(virtual_width, f, shot.look == "ink", lane is not None)
                 + f'<g opacity=".23">{shadow}</g>'
-                + dog_art(f, dog, shot, drawings.get(f.head_view, ""))
+                + (
+                    draw_handler(
+                        f,
+                        h,
+                        actor,
+                        shot.look == "ink",
+                        bool(shot.handler and shot.handler.hand == "left"),
+                    )
+                    if h and actor
+                    else ""
+                )
+                + dog_art(f, dog, shot, drawings.get(f.head_view, ""), bodies.get(f.body_key(), ""))
                 + "</svg>"
             )
             (folder / f"{index:04}.svg").write_text(svg, encoding="utf8")
@@ -119,6 +151,11 @@ def render_gallop(
             ]
             record = {
                 "frame": index,
+                "stage": f.stage,
+                "turn": f.turn,
+                "body_stretch": f.stretch,
+                "body_pitch": f.pitch,
+                "drawing": f.body_key() if bodies else None,
                 "trunk_px": f.length * zoom,
                 "facing": f.facing,
                 "head_view": f.head_view,
@@ -126,6 +163,21 @@ def render_gallop(
                 "body_px": pixels(f.body),
                 "legs": legs,
             }
+            if h:
+                record["handler"] = {
+                    "hand_px": pixels(h.lead.hand),
+                    "hand": shot.handler.hand if shot.handler else None,
+                    "lead_start_px": pixels(h.lead.point(0)),
+                    "collar_px": pixels(f.collar(dog)),
+                    "lead_end_px": pixels(h.lead.point(1)),
+                    "control_px": pixels(h.lead.control),
+                    "shoulder_px": pixels(h.shoulder),
+                    "hip_px": pixels(h.hip),
+                    "feet_px": [pixels(pt) for pt in h.feet],
+                    "tension": h.tension,
+                    "surprise": h.surprise,
+                    "lift": h.lift,
+                }
             contacts.write(json.dumps(record, separators=(",", ":")) + "\n")
         video = folder / "shot.mp4"
         svg_args = [

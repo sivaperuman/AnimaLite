@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import Field
 
 from animalite.contracts.base import Contract
+from animalite.dog_action import launch_bound
 from animalite.dog_walk_fall import FallBlocking, blocking
 from animalite.gallop import DogRig, Leg, gallop_legs
 
@@ -70,29 +71,31 @@ class Leash:
         return (1 - u) ** 2 * self.hand + 2 * (1 - u) * u * self.control + u * u * self.collar
 
 
-def leash(hand: complex, collar: complex) -> Leash:
+def leash(hand: complex, collar: complex, max_length: float = LEASH) -> Leash:
     """Find the downward bow with the specified arc length; a taut lead is straight."""
     chord = collar - hand
     length = abs(chord)
     mid = (hand + collar) / 2
-    if length > LEASH + 1e-7:
+    if length > max_length + 1e-7:
         raise ValueError("leash endpoints exceed its length")
     if length == 0:
-        return Leash(hand, mid + LEASH * 1j, collar)
-    if length >= LEASH - 1e-7:
+        return Leash(hand, mid + max_length * 1j, collar)
+    if length >= max_length - 1e-7:
         return Leash(hand, mid, collar)
     # Quadratic control on the chord's perpendicular bisector. Simpson quadrature
     # integrates the speed along the symmetric half curve.
-    lo, hi = 0.0, LEASH
+    lo, hi = 0.0, max_length
     for _ in range(18):
         bow = (lo + hi) / 2
         samples = [abs(complex(length, 2 * bow * i / 8)) for i in range(9)]
         arc = (samples[0] + samples[-1] + 4 * sum(samples[1::2]) + 2 * sum(samples[2:-1:2])) / 24
-        if arc < LEASH:
+        if arc < max_length:
             lo = bow
         else:
             hi = bow
-    return Leash(hand, mid + 1j * chord / length * ((lo + hi) / 2), collar)
+    return Leash(
+        hand, mid + 1j * chord / length * ((lo + hi) / 2) * (1 if chord.real >= 0 else -1), collar
+    )
 
 
 @dataclass(frozen=True)
@@ -138,7 +141,10 @@ def fall_pose(t: float) -> Pose:
     def pavement(x: float) -> float:
         return world(complex(0, 214 - 23 * ease(x * 1.42 / 2.5, 21, 459))).imag
 
-    legs = gallop_legs(DogRig(), dog, 56, pavement, active=f.sprint, rest_center=rest_x)
+    legs = gallop_legs(
+        DogRig(), dog, 56, pavement, extension=0.80, active=f.sprint, rest_center=rest_x
+    )
+    legs = launch_bound(legs, 56, (t - 44) / 7)
     # The vector terrier has its own collar attachment relative to the torso.
     collar = dog + complex(17, -12)
     collar_offset = collar - world(f.collar)
