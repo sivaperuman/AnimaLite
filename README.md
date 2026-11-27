@@ -410,6 +410,39 @@ hand/prop targets with the offending frame. This workflow uses authored contacts
 Free-falling objects, collisions and custom imported skeletons need separately
 authored animation.
 
+### Portrait dog walk
+
+Render Milo and Pepper's ten-second sidewalk gag with the installed CLI and a CPU
+FFmpeg build that includes librsvg, Flite, H.264 and AAC.
+
+```bash
+animalite story-render examples/dog-walk.json --workspace work/dog-walk
+```
+
+The storyboard selects an authored 2D action. Its `action` sentence describes the
+scene. The `dog_walk` fields control the performance. Set `direction` to `left` to
+reverse travel against the street, and change `launch_frame` (30–60, default 44)
+to retime the tug. Dialogue uses the shot clock in milliseconds. Each line can
+use text and a voice, a recording, or the original synthesized `"vocalization": "sigh"`.
+The speaking handler defaults to Milo. An empty dialogue list produces a silent take.
+
+For a three-second pull test, set `seconds` to 3, `dog_walk.start_frame` to 36
+and `dialogue` to `[]`. Set `dog_walk.contact_overlay` to `true` for rings at
+both leash endpoints and each planted paw. Adjacent slices of the same action
+share a continuous pose timeline when their direction and launch frame match.
+
+Portrait storyboards use `"aspect_ratio": "9:16"` with height 640 or 1280.
+The dog walk and Blender stage render natively at those sizes. Illustrated pose
+shots keep their original landscape dimensions, six-second limit and explicit
+`--profile`. The Studio action authors 24 poses per second.
+
+Each run prints the verified MP4 path and retains the replayable storyboard and
+audio stems. In each `dog-walk-N` folder the SVGs are the rendered poses.
+`contacts.jsonl` gives the hand, quadratic control point and collar in output
+pixels, projected handler and dog landmarks, four paw positions in stage units
+(far hind, far fore, near hind, near fore) and their support flags. A stage unit is one pixel in the
+unprojected 360 by 640 scene, positive x along the direction of travel.
+
 ### Harbour 2D performance demo
 
 Milo waves, walks to the bus, calls out to Max, then runs to hand over a lunchbox.

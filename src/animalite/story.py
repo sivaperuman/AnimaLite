@@ -24,6 +24,9 @@ from animalite.contracts.job import RenderRequest
 from animalite.contracts.media import P_L_FINAL_OUTPUT
 from animalite.contracts.shot import ShotIntent
 from animalite.core.service import LocalExecutionService
+from animalite.dog_walk import FRAMES as DOG_WALK_FRAMES
+from animalite.dog_walk import DogWalk
+from animalite.dog_walk_render import render_dog_walk
 from animalite.errors import ValidationRejected
 from animalite.media.cadence import AnchorTiming
 from animalite.media.probe import probe_output, validate_output
@@ -47,19 +50,29 @@ class Pose(Contract):
 
 class StoryShot(Contract):
     action: str = Field(min_length=1)
-    seconds: int = Field(ge=1, le=6)
+    seconds: int = Field(ge=1, le=10)
     timing: AnchorTiming = AnchorTiming.LINEAR
     camera: Camera = Camera()
     dialogue: list[Dialogue] = Field(default_factory=list)
     poses: list[Pose] = Field(default_factory=list, max_length=4)
     stage: Stage | None = None
+    dog_walk: DogWalk | None = None
     mouths: dict[str, Mouth] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def check_timing(self) -> StoryShot:
         frames = [pose.frame for pose in self.poses]
         end = self.seconds * P_L_FINAL_OUTPUT.cadence.animation_fps - 1
-        if self.stage:
+        if self.dog_walk:
+            if self.stage or self.poses or self.mouths:
+                raise ValueError("dog_walk is a self-contained Studio action")
+            if self.camera != Camera() or self.timing != AnchorTiming.LINEAR:
+                raise ValueError("dog_walk owns its camera and timing; use launch_frame to retime")
+            if self.dog_walk.start_frame + self.seconds * 24 > DOG_WALK_FRAMES:
+                raise ValueError("dog_walk slice exceeds the ten-second action")
+        elif self.seconds > 6:
+            raise ValueError("pose and 3D stage shots must be at most six seconds")
+        elif self.stage:
             if self.poses or self.mouths:
                 raise ValueError(
                     "3D stage shots use geometry and mesh mouths; omit poses and mouths"
@@ -78,10 +91,15 @@ class StoryShot(Contract):
 class Storyboard(Document):
     cast: dict[str, CharacterDesign] = Field(default_factory=dict)
     moves: dict[str, Motion] = Field(default_factory=dict)
-    height: Literal[360, 720, 1080] = 360
+    height: Literal[360, 640, 720, 1080, 1280] = 360
+    aspect_ratio: Literal["16:9", "9:16"] = "16:9"
     story: str = Field(min_length=1)
     voices: dict[str, Voice] = Field(default_factory=dict)
     shots: list[StoryShot] = Field(min_length=1)
+
+    @property
+    def width(self) -> int:
+        return self.height * 9 // 16 if self.aspect_ratio == "9:16" else self.height * 16 // 9
 
     def directed_stage(self, stage: Stage, frames: int) -> Stage:
         actors = {}
@@ -113,13 +131,26 @@ class Storyboard(Document):
 
     @model_validator(mode="after")
     def require_cast_voices(self) -> Storyboard:
-        if self.height != 360 and any(shot.stage is None for shot in self.shots):
-            raise ValueError("native HD requires 3D stage shots throughout the storyboard")
+        portrait = self.aspect_ratio == "9:16"
+        if portrait != (self.height in (640, 1280)):
+            raise ValueError(
+                "portrait heights are 640 and 1280; landscape heights are 360, 720 and 1080"
+            )
+        if any(shot.dog_walk for shot in self.shots) and not portrait:
+            raise ValueError("dog_walk requires a 9:16 storyboard")
+        if self.height != 360 and any(not (shot.stage or shot.dog_walk) for shot in self.shots):
+            raise ValueError(
+                "native HD and portrait require staged shots throughout the storyboard"
+            )
         for shot in self.shots:
             if shot.stage:
                 self.directed_stage(shot.stage, shot.seconds * 24)
             for line in shot.dialogue:
-                if line.audio is None and line.character not in self.voices:
+                if (
+                    line.audio is None
+                    and line.vocalization is None
+                    and line.character not in self.voices
+                ):
                     raise ValueError(f"no voice assigned to {line.character!r}")
         return self
 
@@ -127,6 +158,8 @@ class Storyboard(Document):
 def render_story(manifest: Path, workspace: Path, profile: str, purpose: AdmissionPurpose) -> Path:
     """Each invocation owns a fresh directory; publish only a verified complete movie."""
     board = Storyboard.model_validate_json(manifest.read_bytes())
+    if not profile and any(shot.poses for shot in board.shots):
+        raise ValidationRejected("illustrated pose shots require an explicit --profile")
     workspace.mkdir(parents=True, exist_ok=True)
     run = Path(mkdtemp(prefix="story-", dir=workspace)).resolve()
     prepared_shots: list[StoryShot] = []
@@ -165,7 +198,18 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
             "128k",
         ]
     for number, shot in enumerate(voiced_shots if has_dialogue else board.shots, 1):
-        cues = speech_cues(run, shot.dialogue, shot.seconds) if shot.mouths or shot.stage else {}
+        cues = (
+            speech_cues(run, shot.dialogue, shot.seconds)
+            if shot.mouths or shot.stage or shot.dog_walk
+            else {}
+        )
+        if shot.dog_walk:
+            video = render_dog_walk(
+                binary, shot.dog_walk, shot.seconds, board.width, run / f"dog-walk-{number}", cues
+            )
+            prepared_shots.append(shot)
+            playlist.append(f"file '{video.relative_to(run).as_posix()}'")
+            continue
         if shot.stage is not None:
             video, stage = render_stage(
                 binary,
@@ -177,6 +221,7 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
                 number,
                 cues,
                 board.height,
+                board.width,
             )
             prepared_shots.append(shot.model_copy(update={"stage": stage}))
             playlist.append(f"file '{video.relative_to(run).as_posix()}'")
@@ -287,7 +332,7 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
     )
     expected = P_L_FINAL_OUTPUT.model_copy(
         update={
-            "width": board.height * 16 // 9,
+            "width": board.width,
             "codec_level": "4.1" if board.height == 1080 else "3.1",
             "height": board.height,
             "animation_frame_count": sum(

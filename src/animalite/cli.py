@@ -880,7 +880,7 @@ def build_parser() -> argparse.ArgumentParser:
     story = sub.add_parser("story-render", help="render generated story poses and join shots")
     story.add_argument("storyboard", type=Path)
     story.add_argument("--workspace", type=Path, default=Path("work/stories"))
-    story.add_argument("--profile", required=True)
+    story.add_argument("--profile", default="", help="required for illustrated pose shots")
     story.add_argument(
         "--purpose", choices=[p.value for p in AdmissionPurpose], default="production"
     )
