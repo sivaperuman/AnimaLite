@@ -1,0 +1,121 @@
+{
+  "story": "Milo hides the last biscuit behind his back. Max accepts it and watches Milo offer him the empty tin.",
+  "cast": {
+    "Milo": {"skin": "#FAC39A", "shirt": "#DB7543", "costume": "cap", "limb_scale": 1.14},
+    "Max": {"skin": "#A7BD87", "shirt": "#E7B959", "limb_scale": 1.12, "size": 1.02}
+  },
+  "moves": {
+    "double_take": {
+      "eyes": [
+        {"frame": 1, "end": 1, "target": {"local": [1, -2, 1.9]}},
+        {"frame": 37, "end": 43, "target": {"prop": "Biscuit"}},
+        {"frame": 108, "end": 114, "target": {"actor": "Milo"}}
+      ],
+      "head": [
+        {"frame": 1, "end": 1, "target": {"local": [0.8, -2, 1.9]}},
+        {"frame": 53, "end": 65, "target": {"prop": "Biscuit"}},
+        {"frame": 119, "end": 133, "target": {"actor": "Milo"}}
+      ]
+    }
+  },
+  "shots": [
+    {
+      "action": "Milo palms the biscuit and hides it on his far side. Max quietly takes it. Milo proudly presents the empty tin. Max lifts the biscuit.",
+      "seconds": 6,
+      "stage": {
+        "cinema": {"samples": 8, "set": "studio"},
+        "orbit": {"radius": 5.4, "target": [0, 0, 1.1], "pitch": [8, 8]},
+        "props": {
+          "Tin": {"kind": "tin", "position": [-0.54, -0.355, 1.0], "color": "#317B83", "grips": {"rim": [-0.17, 0, 0]}},
+          "Biscuit": {
+            "kind": "biscuit",
+            "position": [-0.54, -0.35, 1.143],
+            "color": "#E9A249",
+            "grips": {"edge": [0.115, 0, 0], "other": [-0.115, 0, 0]}
+          }
+        },
+        "actors": {
+          "Milo": {
+            "x": -0.53,
+            "design": "Milo",
+            "acting": [
+              {"at": 0.0, "smile": 0.25},
+              {"at": 0.153846, "brow": 0.55, "smile": 0.5},
+              {"at": 0.244755, "blink": 0.95},
+              {"at": 0.27972},
+              {"at": 0.48951, "smile": 0.7},
+              {"at": 0.664336, "smile": 0.7},
+              {"at": 0.79021, "smile": 1},
+              {"at": 0.937063, "smile": -0.7, "brow": -0.3}
+            ],
+            "motion": {
+              "left_hand": [
+                {"frame": 1, "end": 1, "target": {"local": [0.32, -0.07, 0.84]}},
+                {"frame": 28, "end": 43, "target": {"prop": "Biscuit", "grip": "edge"}},
+                {"frame": 47, "end": 60, "target": {"point": [-0.31, -0.42, 1.42]}},
+                {"frame": 64, "end": 82, "target": {"point": [0.04, 0.015, 1.04]}},
+                {"frame": 103, "end": 114, "target": {"local": [0.29, -0.1, 0.87]}}
+              ],
+              "right_hand": [
+                {"frame": 1, "end": 1, "target": {"prop": "Tin", "grip": "rim"}},
+                {"frame": 99, "end": 120, "target": {"point": [-0.23, -0.34, 1.13]}, "rotation": [32, 3, 0]}
+              ],
+              "body": [
+                {"frame": 22, "end": 32, "offset": [-0.035, 0, -0.04], "lean": -7, "turn": 0},
+                {"frame": 47, "end": 62, "offset": [0.025, 0, 0.01], "lean": 5, "turn": 0},
+                {"frame": 64, "end": 81, "offset": [0.025, 0, -0.025], "lean": 9, "turn": -16},
+                {"frame": 99, "end": 119, "offset": [0.085, 0, -0.025], "lean": 14, "turn": 21},
+                {"frame": 125, "end": 138, "offset": [0.045, 0, -0.02], "lean": 7, "turn": 12}
+              ],
+              "eyes": [
+                {"frame": 1, "end": 6, "target": {"actor": "Max"}},
+                {"frame": 22, "end": 26, "target": {"prop": "Biscuit"}},
+                {"frame": 56, "end": 61, "target": {"local": [-0.8, -2, 1.65]}},
+                {"frame": 106, "end": 115, "target": {"actor": "Max"}},
+                {"frame": 128, "end": 134, "target": {"prop": "Biscuit"}}
+              ],
+              "head": [
+                {"frame": 7, "end": 18, "target": {"actor": "Max"}},
+                {"frame": 26, "end": 36, "target": {"prop": "Tin"}},
+                {"frame": 63, "end": 74, "target": {"local": [-1, -2, 1.65]}},
+                {"frame": 114, "end": 126, "target": {"actor": "Max"}}
+              ]
+            }
+          },
+          "Max": {
+            "x": 0.65,
+            "y": 0.055,
+            "design": "Max",
+            "move": "double_take",
+            "acting": [
+              {"at": 0.0, "brow": 0.2},
+              {"at": 0.265734},
+              {"at": 0.391608, "brow": -0.7},
+              {"at": 0.629371, "brow": -0.6},
+              {"at": 0.825175, "smile": 0.75},
+              {"at": 1.0, "smile": 0.8, "brow": 0.5}
+            ],
+            "motion": {
+              "right_hand": [
+                {"frame": 1, "end": 1, "target": {"local": [-0.29, -0.045, 0.78]}},
+                {"frame": 72, "end": 84, "target": {"point": [-0.19, 0.015, 1.04]}},
+                {"frame": 86, "end": 91, "target": {"prop": "Biscuit", "grip": "other"}},
+                {"frame": 98, "end": 112, "target": {"point": [0.29, -0.32, 1.24]}},
+                {"frame": 118, "end": 136, "target": {"point": [0.48, -0.32, 1.56]}, "rotation": [0, -17, 0]}
+              ],
+              "body": [
+                {"frame": 68, "end": 84, "offset": [-0.025, 0, -0.035], "lean": -3, "turn": 0},
+                {"frame": 102, "end": 122, "offset": [0, 0, 0], "lean": 0, "turn": 0}
+              ]
+            }
+          }
+        },
+        "contacts": [
+          {"frame": 1, "action": "grasp", "prop": "Tin", "actor": "Milo", "hand": "right", "grip": "rim"},
+          {"frame": 43, "action": "grasp", "prop": "Biscuit", "actor": "Milo", "hand": "left", "grip": "edge"},
+          {"frame": 91, "action": "handoff", "prop": "Biscuit", "actor": "Max", "hand": "right", "grip": "other"}
+        ]
+      }
+    }
+  ]
+}

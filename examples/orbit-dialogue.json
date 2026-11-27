@@ -1,0 +1,95 @@
+{
+  "story": "Milo and Max spot a camera circling them.",
+  "voices": {
+    "Max": "rms",
+    "Milo": "awb"
+  },
+  "shots": [
+    {
+      "seconds": 3,
+      "action": "Max turns the question over.",
+      "stage": {
+        "actors": {
+          "Milo": {
+            "x": -0.55,
+            "y": 0.13,
+            "skin": "#F7E9D0",
+            "shirt": "#E98041"
+          },
+          "Max": {
+            "x": 0.55,
+            "y": -0.13,
+            "skin": "#99B66A",
+            "shirt": "#D9C69E"
+          }
+        },
+        "orbit": {
+          "target": [
+            0,
+            0,
+            1.08
+          ],
+          "radius": 5.1,
+          "yaw": [
+            -22,
+            -22
+          ],
+          "pitch": [
+            8,
+            8
+          ]
+        }
+      },
+      "dialogue": [
+        {
+          "character": "Max",
+          "text": "Milo, why is the room spinning?",
+          "start_ms": 100
+        }
+      ]
+    },
+    {
+      "seconds": 5,
+      "action": "The camera goes around both speakers and returns to Milo for the punch line.",
+      "stage": {
+        "actors": {
+          "Milo": {
+            "x": -0.55,
+            "y": 0.13,
+            "skin": "#F7E9D0",
+            "shirt": "#E98041"
+          },
+          "Max": {
+            "x": 0.55,
+            "y": -0.13,
+            "skin": "#99B66A",
+            "shirt": "#D9C69E"
+          }
+        },
+        "orbit": {
+          "target": [
+            0,
+            0,
+            1.08
+          ],
+          "radius": 5.1,
+          "yaw": [
+            -22,
+            338
+          ],
+          "pitch": [
+            8,
+            8
+          ]
+        }
+      },
+      "dialogue": [
+        {
+          "character": "Milo",
+          "text": "Max. It is the camera.",
+          "start_ms": 3020
+        }
+      ]
+    }
+  ]
+}

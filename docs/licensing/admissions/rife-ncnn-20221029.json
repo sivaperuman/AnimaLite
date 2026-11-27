@@ -1,0 +1,25 @@
+{
+  "schema_version": "animalite.contracts/v1",
+  "record_id": "rife-ncnn-20221029-dossier",
+  "profile_id": "rife-ncnn-v4.6-cpu",
+  "subject": "rife-ncnn-vulkan 20221029-ubuntu executable (MIT wrapper, BSD-3-Clause ncnn) plus the RIFE v4.6 ncnn-format weights shipped in that release archive",
+  "decision": "pending",
+  "artifact_hashes": [
+    "sha256:5c256556195216ddfca103073b0fd37e33e154c8aa40666775fcae8d6a6580b4",
+    "sha256:724569596bcd1e7b9fa50455c604777ebed99746d2ef40aa86e31b5725f1053c",
+    "sha256:f334ed2260149ce0188a6dcf049844e8b0cdd912e01cbcfb63553157d2508958"
+  ],
+  "permitted_purposes": [],
+  "reviewer": null,
+  "reference": "docs/decisions/DEC-0013-rife-licence-position.md",
+  "recorded_at": null,
+  "conditions": [],
+  "notes": [
+    "REQUESTED, NOT GRANTED. This file is the dossier the D-06 reviewer signs; it is committed with decision='pending' so a checkout inherits a block.",
+    "Purposes being requested, in the order they are needed: research (local development on synthetic frames), benchmark (section 12.0 measurement evidence). Production and redistribution are NOT being requested here.",
+    "Open question 1: the upstream wrapper repository states MIT for its own code and BSD-3-Clause for the vendored ncnn runtime. Both are clear.",
+    "Open question 2: hzwer/Practical-RIFE states MIT for the trained models it links, separately from its code licence. That statement is about the downloads it links; it does not by itself settle the terms of the ncnn-format CONVERSIONS shipped in nihui/rife-ncnn-vulkan's release archive, and that repository does not restate weight terms.",
+    "Open question 3: whether the conversion is a derivative work whose terms follow the original weights, and who performed it.",
+    "What a signed record must contain: reviewer, date, reference to the reasoning, the exact artifact digests above, and the purposes permitted. The schema refuses an 'approved' record missing any of them."
+  ]
+}

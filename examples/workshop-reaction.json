@@ -1,0 +1,126 @@
+{
+  "story": "Max catches Milo reaching for an imaginary jar. Milo freezes mid-wave.",
+  "voices": {
+    "Max": "rms",
+    "Milo": "awb"
+  },
+  "shots": [
+    {
+      "action": "Milo glances at Max, dips in anticipation, raises a hand, then freezes. Max follows the hand with his eyes.",
+      "seconds": 3,
+      "stage": {
+        "cinema": {
+          "set": "workshop",
+          "lighting": "daylight",
+          "samples": 12,
+          "focus_distance": [
+            3.65,
+            3.25
+          ],
+          "f_stop": 2.2,
+          "shutter": 0.24
+        },
+        "orbit": {
+          "target": [
+            0,
+            0,
+            1.44
+          ],
+          "radius": 3.55,
+          "yaw": [
+            -9,
+            4
+          ],
+          "pitch": [
+            4,
+            4
+          ]
+        },
+        "actors": {
+          "Milo": {
+            "x": -0.47,
+            "skin": "#FFCE9B",
+            "shirt": "#E27A45",
+            "costume": "cap",
+            "acting": [
+              {
+                "at": 0,
+                "smile": 0.25
+              },
+              {
+                "at": 0.22,
+                "gaze": 1,
+                "head_turn": 0.22,
+                "smile": 0.75
+              },
+              {
+                "at": 0.32,
+                "blink": 1,
+                "squash": 0.7,
+                "head_tilt": -0.2,
+                "smile": 0.05
+              },
+              {
+                "at": 0.53,
+                "squash": -0.4,
+                "raise_hand": 1,
+                "brow": 0.8,
+                "head_turn": 0.42,
+                "gaze": 1,
+                "smile": -0.65
+              },
+              {
+                "at": 0.7,
+                "raise_hand": 0.89,
+                "brow": 0.35,
+                "head_turn": 0.45,
+                "gaze": 1,
+                "smile": 0.65
+              }
+            ]
+          },
+          "Max": {
+            "x": 0.5,
+            "y": 0.1,
+            "skin": "#ACC77D",
+            "shirt": "#DFBB66",
+            "acting": [
+              {
+                "at": 0,
+                "gaze": 0.2,
+                "smile": 0.15
+              },
+              {
+                "at": 0.38,
+                "gaze": -1,
+                "smile": 0.1
+              },
+              {
+                "at": 0.55,
+                "gaze": -1,
+                "head_turn": -0.52,
+                "head_tilt": 0.28,
+                "brow": -0.8,
+                "smile": -0.9
+              },
+              {
+                "at": 0.83,
+                "gaze": -1,
+                "head_turn": -0.5,
+                "brow": 0.4,
+                "smile": -0.5
+              }
+            ]
+          }
+        }
+      },
+      "dialogue": [
+        {
+          "character": "Milo",
+          "text": "Just waving.",
+          "start_ms": 1450
+        }
+      ]
+    }
+  ]
+}

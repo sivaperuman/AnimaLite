@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# AnimaLite runtime and evidence output (never committed as source).
+# `work/` is the scratch directory used by every documented example command.
+work/
+workspace/
+attempts/
+out/
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.exr
+*.wav
+
+# Model weights, native tool builds and caches
+weights/
+models/
+*.bin
+*.onnx
+*.param
+*.pt
+*.pth
+*.safetensors
+.cache/
+
+# Benchmark outputs and local evidence bundles.
+# Versioned manifests, host records, target sets and evidence *templates* under
+# benchmarks/ are tracked; only run outputs and collected evidence are ignored.
+benchmarks/results/
+benchmarks/runs/
+/evidence/
+benchmarks/evidence/*
+!benchmarks/evidence/*.template.json
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local environment overrides
+.env
