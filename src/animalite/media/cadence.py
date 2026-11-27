@@ -7,19 +7,38 @@ Duplicated delivery frames are never reported as new temporal information.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from enum import StrEnum
 from fractions import Fraction
 
 from animalite.contracts.assets import AnchorSet
 from animalite.contracts.media import FrameAccounting, OutputSpec
 
 __all__ = [
+    "AnchorTiming",
     "animation_index_for_delivery_index",
     "delivery_indices_for_animation_index",
     "exact_duration_seconds",
     "expand_to_delivery",
     "frame_accounting",
 ]
+
+
+class AnchorTiming(StrEnum):
+    LINEAR = "linear"
+    EASE_IN_OUT = "ease-in-out"
+
+    @classmethod
+    def from_controls(cls, controls: Mapping[str, object]) -> AnchorTiming:
+        value = controls.get("timing", cls.LINEAR)
+        if not isinstance(value, str):
+            raise ValueError(f"timing must be a string, got {value!r}")
+        return cls(value)
+
+    def timestep(self, frame: int, left: int, right: int) -> float:
+        """Position between the two anchors at this animation frame."""
+        u = (frame - left) / (right - left)
+        return u * u * (3 - 2 * u) if self is AnchorTiming.EASE_IN_OUT else u
 
 
 def delivery_indices_for_animation_index(index: int, output: OutputSpec) -> list[int]:

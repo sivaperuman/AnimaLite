@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from fractions import Fraction
+from typing import Annotated
 
 from pydantic import Field, field_validator, model_validator
 
@@ -33,6 +34,34 @@ class AssetRef(Contract):
         if not SHA256_PATTERN.match(value):
             raise ValueError(f"content_hash must match 'sha256:<64 hex>'; got {value!r}")
         return value
+
+
+class VideoConditioning(Contract):
+    """Optional frame-indexed appearance and motion controls for neural video."""
+
+    reference_image: AssetRef | None = None
+    control_video: AssetRef | None = None
+    mask_image: AssetRef | None = None
+    mask_video: AssetRef | None = None
+    anchor_strengths: dict[int, Annotated[float, Field(ge=0, le=1)]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def one_mask(self) -> VideoConditioning:
+        if self.mask_image and self.mask_video:
+            raise ValueError("choose a static mask or a moving mask")
+        return self
+
+    def assets(self) -> dict[str, AssetRef]:
+        return {
+            name: asset
+            for name, asset in (
+                ("reference_image", self.reference_image),
+                ("control_video", self.control_video),
+                ("mask_image", self.mask_image),
+                ("mask_video", self.mask_video),
+            )
+            if asset is not None
+        }
 
 
 class InputAnchor(Contract):

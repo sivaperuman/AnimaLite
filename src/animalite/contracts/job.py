@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import Field, model_validator
 
 from animalite.contracts.admission import AdmissionPurpose
-from animalite.contracts.assets import AnchorSet
+from animalite.contracts.assets import AnchorSet, VideoConditioning
 from animalite.contracts.base import Contract, Document, content_digest
 from animalite.contracts.enums import FailureCategory, JobState
 from animalite.contracts.host import ToolIdentity
@@ -38,6 +38,7 @@ class RenderRequest(Document):
     request_id: str = Field(min_length=1)
     shot: ShotIntent
     anchors: AnchorSet
+    conditioning: VideoConditioning | None = None
     engine_profile_id: str = Field(min_length=1)
     output: OutputSpec
     controls: dict[str, float | int | str | bool] = Field(default_factory=dict)
@@ -78,6 +79,8 @@ class RenderRequest(Document):
             "output": self.output.to_json_obj(),
             "controls": dict(sorted(self.controls.items())),
         }
+        if self.conditioning is not None:
+            payload["conditioning"] = self.conditioning.to_json_obj()
         return content_digest(payload)
 
 

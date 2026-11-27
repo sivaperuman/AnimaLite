@@ -27,6 +27,8 @@ from typing import Any
 from pydantic import ValidationError
 
 from animalite import __version__
+from animalite.adapters.ltx_wan_bundle import LoraWeights, ModelBundle, Snapshot, snapshot_digest
+from animalite.adapters.ltx_wan_pretrained import fetch_pretrained, pretrained_plan
 from animalite.adapters.registry import Registry, default_registry
 from animalite.adapters.rife_ncnn import RIFE_PROFILE
 from animalite.adapters.rife_provision import ProvisioningError, provision
@@ -36,8 +38,8 @@ from animalite.bench.evaluate import build_report
 from animalite.bench.ledger import RunLedger
 from animalite.bench.runner import BenchmarkRunner, build_plan, load_dataset, load_host_record
 from animalite.contracts.admission import AdmissionPurpose
-from animalite.contracts.assets import AnchorSet
-from animalite.contracts.base import content_digest
+from animalite.contracts.assets import AnchorSet, AssetRef, VideoConditioning
+from animalite.contracts.base import content_digest, sha256_file
 from animalite.contracts.benchmark import (
     DatasetClip,
     DatasetManifest,
@@ -55,7 +57,7 @@ from animalite.errors import AnimaLiteError, ValidationRejected
 from animalite.fixtures.generator import FIXTURE_CLIPS, generate_clip, write_anchor_set
 from animalite.hostinfo.inventory import collect_inventory
 from animalite.media.ffmpeg import FFmpegTools
-from animalite.story import render_story
+from animalite.story import Storyboard, render_story
 
 __all__ = ["build_parser", "main"]
 
@@ -238,6 +240,31 @@ def cmd_render(args: argparse.Namespace) -> int:
     return EXIT_OK if record.state is JobState.SUCCEEDED else EXIT_ERROR
 
 
+def cmd_story_schema(args: argparse.Namespace) -> int:
+    """Expose the same shot and cast contract that story-render validates."""
+    from animalite.story_edit import ShotEdit
+
+    print(json.dumps((ShotEdit if args.edit else Storyboard).model_json_schema(), indent=2))
+    return 0
+
+
+def cmd_story_revise(args: argparse.Namespace) -> int:
+    from animalite.story_edit import revise_story
+
+    try:
+        movie = revise_story(
+            args.parent,
+            args.workspace,
+            edit_file=args.edit,
+            instruction=args.instruction,
+            shot_number=args.shot,
+        )
+    except (ValidationError, OSError) as exc:
+        raise ValidationRejected(str(exc)) from exc
+    print(movie)
+    return EXIT_OK
+
+
 def cmd_story_render(args: argparse.Namespace) -> int:
     try:
         movie = render_story(
@@ -246,6 +273,30 @@ def cmd_story_render(args: argparse.Namespace) -> int:
     except (ValidationError, OSError) as exc:
         raise ValidationRejected(str(exc)) from exc
     print(movie)
+    return EXIT_OK
+
+
+def cmd_fetch_ltx_wan(args: argparse.Namespace) -> int:
+    if args.install:
+        print(fetch_pretrained(args.cache_dir).model_dump_json(indent=2))
+    else:
+        print(json.dumps(pretrained_plan(), indent=2))
+    return EXIT_OK
+
+
+def cmd_pin_ltx_wan(args: argparse.Namespace) -> int:
+    """Identify both local model directories for review and future replay."""
+
+    def pin(name: str, lora: str | None) -> Snapshot:
+        directory = Path(name).resolve(strict=True)
+        return Snapshot(
+            directory=directory,
+            digest=snapshot_digest(directory),
+            lora=LoraWeights.pin(lora) if lora else None,
+        )
+
+    bundle = ModelBundle(ltx=pin(args.ltx, args.ltx_lora), wan=pin(args.wan, args.wan_lora))
+    print(bundle.model_dump_json(indent=2))
     return EXIT_OK
 
 
@@ -718,6 +769,20 @@ def _envelope(args: argparse.Namespace) -> ExecutionEnvelope | None:
     return envelope
 
 
+def _video_conditioning(args: argparse.Namespace) -> VideoConditioning | None:
+    assets = {}
+    for name in ("reference_image", "control_video", "mask_image", "mask_video"):
+        filename = getattr(args, name, None)
+        if filename:
+            path = Path(filename).resolve(strict=True)
+            assets[name] = AssetRef(path=str(path), content_hash=sha256_file(str(path)))
+    if args.conditioning:
+        if assets:
+            raise ValidationRejected("choose --conditioning or individual media flags")
+        return VideoConditioning.model_validate_json(Path(args.conditioning).read_bytes())
+    return VideoConditioning.model_validate(assets) if assets else None
+
+
 def _request(args: argparse.Namespace) -> RenderRequest:
     # A serialized request round-trips exactly, which is what lets the benchmark
     # execute an identical job in a fresh process for process-cold timing.
@@ -747,6 +812,7 @@ def _request(args: argparse.Namespace) -> RenderRequest:
         ),
         anchors=anchors,
         engine_profile_id=args.profile,
+        conditioning=_video_conditioning(args),
         output=output,
         controls=controls,
         timeout_seconds=args.timeout,
@@ -778,6 +844,14 @@ def _add_request_arguments(parser: argparse.ArgumentParser) -> None:
             "profile: rendering never selects an engine implicitly."
         ),
     )
+    parser.add_argument(
+        "--conditioning",
+        help="JSON containing pinned reference, control video, mask or per-anchor strengths",
+    )
+    parser.add_argument("--reference-image", help="PNG character appearance reference")
+    parser.add_argument("--control-video", help="MP4 motion reference, sampled at animation fps")
+    parser.add_argument("--mask-image", help="PNG edit mask: white refines, black preserves")
+    parser.add_argument("--mask-video", help="MP4 with a moving edit mask")
     parser.add_argument("--anchors", default=None, help="path to an anchor-set JSON file")
     parser.add_argument(
         "--request-file",
@@ -877,10 +951,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     render.set_defaults(func=cmd_render)
 
+    schema = sub.add_parser(
+        "story-schema", help="print the storyboard JSON schema for interactive direction"
+    )
+    schema.add_argument("--edit", action="store_true", help="print the single-shot edit schema")
+    schema.set_defaults(func=cmd_story_schema)
+    revision = sub.add_parser(
+        "story-revise", help="re-render one directed shot in a retained story"
+    )
+    revision.add_argument("parent", type=Path, help="previous run directory or its movie")
+    revision.add_argument("--workspace", type=Path, default=Path("work/stories"))
+    source = revision.add_mutually_exclusive_group(required=True)
+    source.add_argument("--edit", type=Path, help="JSON document matching story-schema --edit")
+    source.add_argument("--instruction", help="bounded local English timing instruction")
+    revision.add_argument("--shot", type=int, help="one-based shot for --instruction")
+    revision.set_defaults(func=cmd_story_revise)
     story = sub.add_parser("story-render", help="render generated story poses and join shots")
     story.add_argument("storyboard", type=Path)
     story.add_argument("--workspace", type=Path, default=Path("work/stories"))
-    story.add_argument("--profile", required=True)
+    story.add_argument("--profile", default="", help="required for illustrated pose shots")
     story.add_argument(
         "--purpose", choices=[p.value for p in AdmissionPurpose], default="production"
     )
@@ -897,6 +986,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     runtime = sub.add_parser("runtime", help="inspect the pinned learned model runtime")
     runtime_sub = runtime.add_subparsers(dest="runtime_command", required=True)
+    fetch = runtime_sub.add_parser(
+        "fetch-ltx-wan", help="plan or install the pinned pretrained checkpoints"
+    )
+    fetch.add_argument(
+        "--install", action="store_true", help="download, verify and print a local bundle"
+    )
+    fetch.add_argument("--cache-dir", type=Path, help="Hugging Face checkpoint cache")
+    fetch.set_defaults(func=cmd_fetch_ltx_wan)
+    pin = runtime_sub.add_parser("pin-ltx-wan", help="fingerprint two local Diffusers snapshots")
+    pin.add_argument("--ltx", required=True)
+    pin.add_argument("--wan", required=True)
+    pin.add_argument("--ltx-lora", help="optional local LTX transformer LoRA safetensors")
+    pin.add_argument("--wan-lora", help="optional local Wan VACE transformer LoRA safetensors")
+    pin.set_defaults(func=cmd_pin_ltx_wan)
     rt_status = runtime_sub.add_parser(
         "status", help="report install, verification, compatibility and admission"
     )

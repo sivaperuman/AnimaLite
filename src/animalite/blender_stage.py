@@ -179,7 +179,7 @@ def build_scene(config):
         scene.view_settings.view_transform = "Standard"
         scene.display.render_aa = "FXAA"
     height = job.get("height", 360)
-    scene.render.resolution_x = height * 16 // 9
+    scene.render.resolution_x = job.get("width", height * 16 // 9)
     scene.render.resolution_y = height
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"

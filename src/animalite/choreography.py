@@ -70,6 +70,7 @@ class Aim(Beat):
 
 class Reach(Aim):
     rotation: Vec3 | None = None
+    arc_height: FiniteFloat = Field(default=0, ge=0)
 
 
 class Motion(Contract):

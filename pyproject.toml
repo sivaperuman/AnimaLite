@@ -29,6 +29,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+neural = [
+  "torch==2.8.0", "torchvision==0.23.0", "diffusers==0.35.1",
+  "transformers==4.56.2", "accelerate==1.10.1", "peft==0.17.1", "opencv-python-headless==4.11.0.86", "sentencepiece>=0.2,<0.3", "ftfy>=6,<7",
+]
 dev = [
   "pytest>=8.3,<9",
   "ruff>=0.6,<1",

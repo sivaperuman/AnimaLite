@@ -43,6 +43,7 @@ from animalite.contracts.profile import (
 )
 from animalite.contracts.validation import ValidationIssue
 from animalite.errors import AdapterError, CodeVAL
+from animalite.media.cadence import AnchorTiming
 from animalite.media.flow import (
     DEFAULT_ACCEPT_MARGIN,
     DEFAULT_BLOCK_SIZE,
@@ -150,7 +151,7 @@ def _validate_controls(
             )
             continue
         if name == "timing":
-            if value not in ("linear", "ease-in-out"):
+            if value not in tuple(AnchorTiming):
                 issues.append(
                     invalid(name, f"unsupported timing {value!r}", "Use linear or ease-in-out.")
                 )
@@ -322,6 +323,7 @@ class ClassicalWarpAdapter:
             # driven directly, using the same check so the two cannot disagree.
             raise AdapterError(blocking[0].message)
 
+        timing = AnchorTiming.from_controls(params)
         block_size = int(
             _coerce_numeric(
                 params.get("block_size", DEFAULT_BLOCK_SIZE), "block_size", integral=True
@@ -387,9 +389,7 @@ class ClassicalWarpAdapter:
                 )
 
             assert forward is not None and backward is not None  # set with cached_pair
-            timestep = (frame_index - left_idx) / (right_idx - left_idx)
-            if params.get("timing") == "ease-in-out":
-                timestep = timestep * timestep * (3 - 2 * timestep)
+            timestep = timing.timestep(frame_index, left_idx, right_idx)
             yield interpolate_motion_compensated(
                 left, right, timestep, forward, backward, block_size=block_size
             )

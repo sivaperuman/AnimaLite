@@ -33,9 +33,14 @@ class Dialogue(Contract):
     start_ms: int = Field(default=0, ge=0)
     text: str | None = Field(default=None, min_length=1)
     audio: Path | None = None
+    vocalization: Literal["sigh"] | None = None
 
     @model_validator(mode="after")
     def require_line(self) -> Dialogue:
+        if self.vocalization:
+            if self.text is not None or self.audio is not None:
+                raise ValueError("use a vocalization, a line of text, or recorded audio")
+            return self
         if self.text is None and self.audio is None:
             raise ValueError("dialogue requires text or a recorded audio file")
         return self
@@ -107,6 +112,16 @@ def mix_shot(
             if not source.is_file() or demux is None:
                 raise ValidationRejected(f"expected a WAV, MP3 or FLAC voice recording: {source}")
             inputs = ["-f", demux, "-i", str(source), "-map", "0:a:0"]
+        elif line.vocalization == "sigh":
+            # A voiced exhale: filtered breath and a falling fundamental, enveloped together.
+            sigh = (
+                "anoisesrc=color=pink:sample_rate=48000:amplitude=0.42:duration=0.78:seed=11,"
+                "highpass=f=430,lowpass=f=2200[air];"
+                "aevalsrc=0.09*sin(2*PI*(154*t-40*t*t)):s=48000:d=0.78[voice];"
+                "[air][voice]amix=inputs=2:normalize=0,"
+                "afade=t=in:st=0:d=0.09,afade=t=out:st=0.15:d=0.60"
+            )
+            inputs = ["-f", "lavfi", "-i", sigh]
         else:
             (run / f"{stem}.txt").write_text(line.text or "", encoding="utf-8")
             inputs = [
@@ -140,7 +155,7 @@ def mix_shot(
                 f"shot {number}, {line.character}: empty line or dialogue extends past shot end"
             )
         mixed[offset : offset + samples.size] += samples
-        prepared.append(line.model_copy(update={"audio": Path(dest.name)}))
+        prepared.append(line.model_copy(update={"audio": Path(dest.name), "vocalization": None}))
     maximum = max(32767, int(np.abs(mixed).max()))
     track.writeframes((mixed * (32767 / maximum)).astype("<i2").tobytes())
     return prepared

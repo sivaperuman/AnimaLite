@@ -244,6 +244,7 @@ def render_stage(
     number: int,
     cues: dict[str, list[Cue]],
     height: int = 360,
+    width: int | None = None,
 ) -> tuple[Path, Stage]:
     blender = shutil.which("blender")
     if not blender:
@@ -274,6 +275,7 @@ def render_stage(
                 "camera": camera.to_json_obj(),
                 "frames": seconds * 24,
                 "height": height,
+                "width": width if width is not None else height * 16 // 9,
                 "cues": cues,
             }
         ),

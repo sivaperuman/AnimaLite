@@ -652,3 +652,61 @@ The prototype entry point, optional dependencies and exact reproduction commands
 - With an intentionally missing FFprobe the render exited 1, recorded `ToolUnavailableError` in the new attempt and published no video.
 - The direct combined suite produced 230 passes and one failure in the existing descendant-teardown test. The reported child was a zombie adopted by PID 1 (`tail`) on this host. The unchanged test passed when run under a Linux child subreaper. The unchanged combined suite then passed all 231 tests in 125.71 s under the subreaper. The downloadable review bundle in the shared workspace contains both transcripts and the wrapper.
 - Both complete backend pairs had identical repeated RGB and MP4 hashes per backend. FFmpeg `-xerror -err_detect explode` decoded both candidates and the side-by-side to completion. The review package includes FFprobe JSON, frame-indexed screenshots, raw manifests and RSS samples.
+
+## Opening-frame dog-walk development shot
+
+On Python 3.12.14 and FFmpeg 7.1.5, the revised `examples/dog-walk.json` rendered 240 frames at 720 × 1280 through `animalite story-render`. The separate `spikes/dog_walk_frame0/render.py` entry point rendered 240 frames at the uploaded 144 × 256 resolution. The first decoded YUV picture matched the source byte for byte. The silent MP4 SHA-256 was `8fb5c6d94d09ca470a2d3557cbdc90a0865b7018c1999349467147e8f8898fd6`.
+
+On this calibrated clip, the mean of the per-frame FFmpeg luma SSIM values over frames 1–239 was 0.4697 for the new cutout, 0.3572 for the previous cutout and 0.4068 for a held opening frame. All three comparisons used native resolution and presentation-frame index. The background's median leftward displacement in the sampled house bands, frames 48–120, was 4.27 pixels per frame in the new take and 4.19 in the reference. This is an authored development result.
+
+## Reusable countryside gallop
+
+Four runs of `animalite story-render` used the two dogs and two looks from
+the [countryside storyboard](../examples/countryside/gallop.json). Each dog
+ran right for four seconds at 2.6 trunk lengths per second, then left for four
+seconds at 3.6 with 1.08× stride extension. All four outputs decoded to 192
+frames at 640 × 360 and 24 fps. Switching to the three-quarter drawing at
+frame 38 and back at 62 left the underlying limb positions identical between
+looks. The encoded head-cue test also reproduced its movie byte for byte after
+the input drawing was removed and the retained storyboard was replayed.
+
+Across these four runs, per-frame world-space paw displacement was zero for
+all 710 consecutive planted observations. An image check located the dark paw
+pad near the predicted position in both decoded pictures, omitting overlaps
+and ambiguous edges. For the 674 usable pairs, the median absolute horizontal
+displacement after subtracting camera motion was 0.25 output pixels, and the
+95th percentile was 0.72 pixels. These are measurements on this scene.
+
+With the same motion solver, the 144 × 256 opening-frame experiment preserved
+the first decoded reference picture. Mean luma SSIM over the other 239 frames
+was 0.46952, compared with 0.46971 for the preceding render.
+
+## Launch, leash response, painted turns and shot revision
+
+The 22-second `examples/leash-run/story.json` was rendered using the documented
+`story-render` command. The first ten seconds use Pepper and Milo. The next
+two six-second shots use Clover and Rae, with identical paw tracks in painted
+anime and ink. Across those three takes the largest displacement between
+consecutive supported paw positions was below 1e-9 scene pixels. The exported
+grip and collar matched the rendered lead's two control endpoints on every
+frame. These values describe the rig geometry. In a separate launch retiming
+test, moving launch eight frames later moved the first strong pull eight frames
+later. Strong pull here means a tension value above 0.65.
+
+Applying “make the launch quicker and hold the surprised look longer” to
+shot 2 shortened the acceleration from seven frames to five. The first strong
+pull moved from frame 23 to 22. The final frame with surprise above half
+intensity moved from 122 to 134. The clip digests for shots 1 and 3 matched
+their originals. A fresh render of the revised storyboard reproduced the
+entire edited movie byte for byte. A separate two-shot test exercised retained
+dialogue as well as the refusal to reuse a modified clip.
+
+The opening-frame experiment also used the suspended first stride on the
+uploaded 144 × 256 development clip. Visual inspection put maximum dog
+extension around frames 50–53 and the first forepaw landing around 54–55.
+The revised motion reached maximum launch extension at 50–51 and recorded
+forepaw stance at 55. The opening picture matched exactly. Mean luma SSIM
+over frames 1–239 changed from 0.469517 to 0.469779, and from 0.346911 to
+0.347549 over frames 48–144. The reference cutout retains the original
+shot-specific character blocking. The reusable handler is evaluated
+separately in the staged shots.

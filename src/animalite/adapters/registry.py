@@ -13,6 +13,7 @@ from animalite.adapters.classical_warp import (
     ClassicalWarpAdapter,
 )
 from animalite.adapters.fixture import FIXTURE_PROFILE, FixtureAdapter
+from animalite.adapters.ltx_wan import LtxWanAdapter, model_profile
 from animalite.adapters.rife_ncnn import RIFE_PROFILE, RifeNcnnAdapter
 from animalite.contracts.profile import EngineProfile
 from animalite.errors import ProfileNotFoundError
@@ -80,4 +81,7 @@ def default_registry() -> Registry:
     registry.register_profile(RIFE_PROFILE)
     registry.register_adapter(ClassicalWarpAdapter())
     registry.register_profile(CLASSICAL_WARP_PROFILE)
+    neural = LtxWanAdapter()
+    registry.register_adapter(neural)
+    registry.register_profile(model_profile(neural.bundle))
     return registry

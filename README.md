@@ -219,8 +219,10 @@ the driver riding a bicycle.” The development session performs the following s
 python -m animalite story-render storyboard.json --profile classical-warp-baseline
 ```
 
-With the classical renderer, optional `ease-in-out` timing starts and lands each
-movement gently. Omit it for linear timing.
+For illustrated shots, optional `ease-in-out` timing starts and lands each
+movement gently between successive poses. The classical and RIFE adapters
+use the same curve. RIFE execution requires an approved runtime and weights
+for the requested purpose. Omit timing for the default linear spacing.
 
 The command fits images into 640×360 without stretching, renders each shot
 through the execution service and joins them with hard cuts into one
@@ -378,10 +380,11 @@ default smooth easing or `"ease": "linear"`.
 | --- | --- |
 | `body` | Set a pelvis `offset` from rest in actor-local units, a sideways spine `lean`, and a torso `turn` in degrees. |
 | `left_foot`, `right_foot` | Move an ankle by an offset from its planted position. Use two beats to lift and land a foot. Grounded feet stay in place as the pelvis moves. |
-| `left_hand`, `right_hand` | Reach a `target` and optionally set wrist `rotation` in world XYZ degrees. Elbows and knees use a two-segment IK solve. Left and right belong to the actor. |
+| `left_hand`, `right_hand` | Reach a `target`. Optional `arc_height` lifts the wrist above the straight path in world Z, in scene units, peaking halfway through the movement. The default is zero. Optional `rotation` sets the wrist in world XYZ degrees. Left and right belong to the actor. |
 | `eyes`, `head` | Give each a target and its own timing. To lead a reaction with the eyes, start the head beat several frames later. |
 
-A `target` can specify a world `point`, an actor-relative `local` point, an
+Elbows and knees use a two-segment IK solve. A `target` can specify a world
+`point`, an actor-relative `local` point, an
 `actor` to look at, or a `prop` with an optional named `grip`. An optional
 world-space `offset` adjusts the aim. Completed reaches and looks keep
 tracking a moving target. Facial acting and spoken mouth cues still work.
@@ -398,12 +401,115 @@ two hands meet opposite edges of the biscuit:
 At frame 91 a `handoff` names **Max's receiving hand** and the `other` grip.
 The current owner supplies the donor. The prop keeps its world pose at the
 transfer and subsequently follows the receiving wrist's translation and
-rotation. A `release` leaves the prop at its last world pose. A hand holds one
+rotation. Fingers ease closed over the four frame intervals before contact and
+open over four intervals after release. Both hands are closed on the transfer
+frame. A `release` leaves the prop at its last world pose. A hand holds one
 prop at a time. Schedule the reach to arrive on the contact frame. The renderer
 rejects missed grips (over 0.002 scene units), unreachable limbs and circular
 hand/prop targets with the offending frame. This workflow uses authored contacts.
 Free-falling objects, collisions and custom imported skeletons need separately
 authored animation.
+
+### Portrait dog walk
+
+Render Milo and Pepper's ten-second sidewalk gag with the installed CLI and a CPU
+FFmpeg build that includes librsvg, Flite, H.264 and AAC.
+
+```bash
+animalite story-render examples/dog-walk.json --workspace work/dog-walk
+```
+
+The storyboard selects an authored 2D action. Its `action` sentence describes the
+scene. The `dog_walk` fields control the performance. Set `direction` to `left` to
+reverse travel against the street, and change `launch_frame` (30–60, default 44)
+to retime the tug. Dialogue uses the shot clock in milliseconds. Each line can
+use text and a voice, a recording, or the original synthesized `"vocalization": "sigh"`.
+The speaking handler defaults to Milo. An empty dialogue list produces a silent take.
+
+For a three-second pull test, set `seconds` to 3, `dog_walk.start_frame` to 36
+and `dialogue` to `[]`. Set `dog_walk.contact_overlay` to `true` for rings at
+both leash endpoints and each planted paw. Adjacent slices of the same action
+share a continuous pose timeline when their direction and launch frame match.
+
+Portrait storyboards use `"aspect_ratio": "9:16"` with height 640 or 1280.
+The dog walk and Blender stage render natively at those sizes. Illustrated pose
+shots keep their original landscape dimensions, six-second limit and explicit
+`--profile`. The Studio action authors 24 poses per second.
+
+Each run prints the verified MP4 path and retains the replayable storyboard and
+audio stems. In each `dog-walk-N` folder the SVGs are the rendered poses.
+`contacts.jsonl` gives the hand, quadratic control point and collar in output
+pixels, projected handler and dog landmarks, four paw positions in stage units
+(far hind, far fore, near hind, near fore) and their support flags. A stage unit is one pixel in the
+unprojected 360 by 640 scene, positive x along the direction of travel.
+
+### Direct a reusable dog gallop
+
+Run the countryside storyboard to see a short-legged dog and a sighthound in
+ink and painted anime. Both use the same four-leg motion as the sprint in the
+opening-frame dog-walk experiment.
+
+```bash
+animalite story-render examples/countryside/gallop.json --workspace work/countryside
+animalite story-schema
+```
+
+The storyboard defines each dog once under `dogs`. In a shot, choose the dog's
+name and change its `look`, `direction`, `speed` (trunk lengths per second),
+`extension` (stride multiplier), or `camera_follow` (1 holds the dog at its
+initial screen position, lower values allow more lead room). The feet
+stay anchored in the scene during stance as the camera moves. Each shot exports
+its joints, paws and contact flags in `gallop-N/contacts.jsonl`.
+
+To direct a head turn from chat, use the JSON schema and edit `head_cues`. For
+example, `[{"frame":38,"view":"three-quarter"},{"frame":62,"view":"profile"}]`
+makes the dog glance at the viewer for one second at 24 fps. For new characters,
+supply transparent head drawings with a normalized neck pivot and a size in
+trunk lengths under `dogs.<name>.head_drawings.<look>`. The example includes
+four generated head drawings and a painted countryside background. Paths are
+relative to the storyboard. Each run saves the referenced artwork alongside
+its replayable `storyboard.json`.
+
+### Join actions and revise one shot from chat
+
+The [leash-run storyboard](examples/leash-run/story.json) directs Pepper and Milo
+through a sprint, then reuses the action for Clover and Rae on a coastal promenade
+in painted anime and ink. Each performance starts at rest and passes through acceleration,
+gallop, braking, a stepping half-turn and a settled hold.
+
+```bash
+animalite story-render examples/leash-run/story.json --workspace work/stories
+animalite story-schema --edit
+animalite story-revise <previous-run> --workspace work/stories --shot 2 \
+  --instruction "make the launch quicker and hold the surprised look longer"
+```
+
+All motion frame numbers are zero-based at 24 fps. The edit's shot number
+is one-based. The example direction shortens acceleration from seven frames
+to five and extends the surprise hold from 12 frames to 24. ChatGPT can use
+the edit schema for precise changes to launch, acceleration, speed, braking,
+turn duration, head cues and the surprise hold. Pass a JSON file with
+`--edit`, for example `{"shot":2,"launch_frame":26,"surprise_hold_frames":24}`.
+The offline English command also accepts “start the launch 8 frames later”.
+It rejects an unrecognized instruction as a whole.
+
+A shot's `handler.actor` selects an existing cast design. Set `handler.hand`
+to `left` or `right` and measure `leash_length` in dog trunk lengths. The
+grip and collar determine the curve of the lead. Its tension drives the
+handler's arm, lean, foot lift and expression. A new `dogs` entry can register
+four transparent body drawings named `extended`, `compressed`, `quarter`
+and `front`. Each combines a painted trunk, head and tail with four separately
+animated legs. Register the brass tag or other collar attachment in each
+square image with `anchor_x` and `anchor_y` fractions. A drawing can supply
+its own `ink_image` or use the ink rendition of the painted cel.
+
+Revisions create a fresh run, retain the source artwork and audio, render the
+selected shot and copy the other encoded shots. `revision.json` lists which
+shots were reused. `shot-index.json` records the input and clip hashes for
+the next edit. Older runs with the complete storyboard, playlist, assets and
+encoded shots can establish this index on their first revision. To regenerate
+the revised movie from its drawings, pass its `storyboard.json` to
+`story-render`.
 
 ### Harbour 2D performance demo
 
@@ -422,3 +528,114 @@ python examples/harbour/render.py work/harbour.mp4
 
 The renderer uses Pycairo and the DejaVu Sans font for drawing. If Pycairo is
 installed in a separate system Python, pass `--drawing-python /usr/bin/python3`.
+
+#### Reference-guided gallop
+
+A storyboard can store a motion guide once in `gallop_guides` and select it in
+any performance shot with `gallop.guide_name`. In the leash-run example the
+same guide drives Pepper and Clover. To apply a guide to one shot in a saved
+run, use a structured `story-revise` edit such as
+`{"shot":2,"guide_name":"leash-sprint"}`. An inline `performance.pose_guide`
+also works for a self-contained shot.
+
+Mark the hip, shoulder, elbow, wrist and paw on a visible foreleg in a side
+view at maximum reach and first landing. Coordinates are source pixels with
+the origin at top left. The solver infers facing, proportions and bend from
+those points. Frame numbers are zero-based. Reach occurs at the end of the
+target acceleration, and the source timing ratio sets the first lead-forepaw
+landing. Each pose has a strength from zero to one. A positive landing strength
+selects the timed contact and blends its placement. During the front view the
+paws step into separate lanes, set by `front_half_width` in trunk lengths and
+`front_strength`. The example uses approximate observations from frames 51 and
+55 of the supplied 144p clip, relative to launch at frame 44. The front-facing
+stance is authored because the handler obscures the reference dog's turn.
+
+Painted characters can supply `leg_drawing.image` and independently set
+`fore_width` and `hind_width` in trunk lengths. Use the transparent
+`examples/leash-run/tan-paws.png` as an atlas template. Its four rows are
+profile foreleg, profile hindleg, front foreleg and front hindleg. Each row
+has upper leg, lower leg and paw in three equal square cells. In a 128-unit
+cell the proximal and distal pivots are (64,24) and (64,104). Register the
+bottom of the paw at the distal pivot. The ink treatment continues to draw
+the same joint tracks. These controls run in the deterministic Studio renderer.
+
+### LTX and Wan neural generation
+
+The opt-in `ltx-wan-cpu` profile runs LTX-Video and Wan VACE sequentially
+on CPU. The default guided mode builds a motion guide from 2–4 timed poses
+using dense optical flow in both directions. It gives less weight to a warped
+pose where the forward and reverse motion estimates disagree. When the two
+warps place a strong outline in different locations, a connected region
+selects one source pose to reduce double-drawn paws. A supplied motion
+video can serve as the guide instead. LTX conditions on the guide and the
+approved poses. Wan refines the LTX draft using the character reference, which
+defaults to the opening pose. At each stage the renderer limits per-channel
+changes and reduces the contribution of a proposal whose color diverges from
+the guide or draft. Black mask pixels preserve the guide. Approved poses are
+restored exactly before encoding. Direct renders support landscape 320×180
+and 640×360, plus portrait 144×256, 180×320 and 360×640.
+
+Install the optional `.[neural]` dependencies in an environment with CPU
+PyTorch wheels. The first command below prints the exact upstream revisions,
+digests and storage requirements without downloading weights. Installation
+fetches only the selected Diffusers components and verifies both local trees
+before printing a renderable bundle. The pair uses 44.43 GB of storage plus
+25.39 GB for the largest temporary worker copy. Inference RAM is additional.
+The project tracks the pending research decision for these exact checkpoints.
+See [the pretrained checkpoint record](docs/licensing/admissions/ltx-wan-research.json).
+
+```bash
+animalite runtime fetch-ltx-wan
+animalite runtime fetch-ltx-wan --install --cache-dir /models/cache > bundle.json
+export ANIMALITE_LTX_WAN_BUNDLE="$PWD/bundle.json"
+animalite render --profile ltx-wan-cpu --anchors anchors.json \
+  --motion "The dog extends its forelegs, lands, then turns toward the handler" \
+  --control seed=42 --workspace work/neural
+```
+
+To use existing local checkpoints or add transformer LoRAs, pin the files
+together. Each optional LoRA gets its own digest in the profile and must be
+covered by the execution decision. Either LoRA may be omitted. A scale of
+zero disables that adapter for a controlled comparison. Compatible adapters
+must match their respective transformer architectures.
+See [execution admissions](docs/licensing/admissions/README.md).
+
+```bash
+animalite runtime pin-ltx-wan --ltx /models/ltx --wan /models/wan \
+  --ltx-lora /models/motion.safetensors --wan-lora /models/linework.safetensors > bundle.json
+```
+
+| Render control | Effect |
+| --- | --- |
+| `ltx_lora_scale`, `wan_lora_scale` | Scale the low-rank update inside each transformer, from 0 to 2. Default 1. |
+| `ltx_mix`, `wan_mix` | Maximum fraction of each stage's pixel correction in guided mode. Defaults 0.20 and 0.15. |
+| `residual_limit` | Guided per-stage color correction limit and agreement scale, in RGB levels. Default 24 of 255. |
+| `render_mode=diffusion` | Render the full diffusion output for comparison with the earlier profile. Black mask pixels retain the driving video or raw LTX draft in this mode. |
+| `retain_stages=true` | Save the LTX and Wan proposals and the available guide as RGB arrays under the attempt's `work/ltx-wan` directory, before endpoint restoration and encoding. |
+
+Pass controls individually, for example `--control wan_lora_scale=0.75`.
+Image-pose storyboard shots accept the same overrides in their `controls`
+object. To evaluate a trained checkpoint or LoRA, hold the poses, prompt,
+seed and steps fixed. Compare the guide alone, raw diffusion, and guided output
+on the withheld frames. Compare each LoRA at zero and its intended scale.
+Inspect airborne paws, contact frames and the handler silhouette at normal
+speed and frame by frame. Record the checkpoint digests and peak CPU memory.
+
+Control and mask videos use MP4 and must cover the requested clip at animation
+cadence. `--mask-image` accepts a static PNG. To set individual anchor strengths,
+pass `--conditioning conditions.json` with `anchor_strengths` keyed by animation
+index and any `reference_image`, `control_video`, `mask_image` or `mask_video`
+asset references (each has `path` and `content_hash`). The same object is
+available as `conditioning` on storyboard image-pose shots. Relative media paths
+in a storyboard resolve alongside the storyboard and are retained for replay.
+Use `animalite story-render board.json --profile ltx-wan-cpu` for those shots.
+An existing Studio gallop can supply the motion MP4 for a neural render.
+
+The worker loads each verified snapshot in turn from local disk. Allow scratch
+space for a private copy of the larger snapshot. The integration test runs
+both neural architectures with freshly initialized small weights. Run it with
+`ANIMALITE_RUN_NEURAL_SMOKE=1 python -m pytest tests/test_ltx_wan.py` after
+installing the neural dependencies. The [dog clip evaluation](docs/verification/ltx-wan-weighting.md)
+includes held-out frame errors for the raw, guided and guide-only runs.
+Pretrained visual quality, model memory
+use, and throughput on the target low-spec CPU remain unmeasured.

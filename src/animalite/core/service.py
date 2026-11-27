@@ -442,6 +442,8 @@ class LocalExecutionService:
 
             context = AdapterContext(
                 anchor_frames=anchor_frames,
+                conditioning=request.conditioning,
+                shot=request.shot,
                 output=request.output,
                 anchors=request.anchors,
                 profile=profile,
