@@ -8,6 +8,7 @@ import json
 import math
 import sys
 from pathlib import Path
+from typing import Any
 
 import bpy  # type: ignore[import-not-found]
 from mathutils import Euler, Vector  # type: ignore[import-not-found]
@@ -90,8 +91,21 @@ def build_scene(config):
                 raise ValueError(f"missing mouth mesh {name!r} for {speaker}")
             mouths[speaker] = obj
     elif film is not None:
+        blocking = bool(
+            stage.get("props")
+            or stage.get("contacts")
+            or any(
+                a.get("motion") is not None or a.get("size", 1) != 1 or a.get("limb_scale", 1) != 1
+                for a in stage["actors"].values()
+            )
+        )
+        rigs: dict[str, Any] | None = {} if blocking else None
         for speaker, spec in stage["actors"].items():
-            mouths[speaker] = film.sculpt(speaker, spec, frames, color, add_mouth_keys)
+            mouths[speaker] = film.sculpt(speaker, spec, frames, color, add_mouth_keys, rigs)
+        if rigs is not None:
+            importlib.import_module("blender_blocking").bake(
+                scene, stage, rigs, frames, film, color
+            )
     else:
         for speaker, spec in stage["actors"].items():
             mouths[speaker] = actor(speaker, spec)

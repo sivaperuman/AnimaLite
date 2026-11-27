@@ -9,6 +9,13 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from animalite.choreography import (
+    CharacterDesign,
+    Motion,
+    builtin_moves,
+    check_grip,
+    validate_contacts,
+)
 from animalite.contracts.admission import AdmissionPurpose
 from animalite.contracts.assets import AnchorSet, AssetRef, InputAnchor
 from animalite.contracts.base import Contract, Document, sha256_file
@@ -68,16 +75,48 @@ class StoryShot(Contract):
 
 
 class Storyboard(Document):
+    cast: dict[str, CharacterDesign] = Field(default_factory=dict)
+    moves: dict[str, Motion] = Field(default_factory=dict)
     height: Literal[360, 720, 1080] = 360
     story: str = Field(min_length=1)
     voices: dict[str, Voice] = Field(default_factory=dict)
     shots: list[StoryShot] = Field(min_length=1)
+
+    def directed_stage(self, stage: Stage, frames: int) -> Stage:
+        actors = {}
+        for name, actor in stage.actors.items():
+            if actor.design is not None:
+                if actor.design not in self.cast:
+                    raise ValueError(f"unknown cast design {actor.design}")
+                actor = actor.model_copy(update=self.cast[actor.design].model_dump())
+            motion = actor.motion
+            if actor.move is not None:
+                clip = self.moves.get(actor.move) or builtin_moves().get(actor.move)
+                if clip is None:
+                    raise ValueError(f"unknown performance {actor.move}")
+                overrides = {k: v for k, v in motion.tracks().items() if v} if motion else {}
+                motion = clip.model_copy(update=overrides)
+            if motion:
+                for beats in motion.tracks().values():
+                    if beats and beats[-1].end > frames:
+                        raise ValueError(f"{name}: beat extends beyond the shot")
+                for beat in [*motion.left_hand, *motion.right_hand, *motion.eyes, *motion.head]:
+                    target = beat.target
+                    if target.actor is not None and target.actor not in stage.actors:
+                        raise ValueError(f"unknown target actor {target.actor}")
+                    if target.prop is not None:
+                        check_grip(stage.props, target.prop, target.grip)
+            actors[name] = actor.model_copy(update={"motion": motion, "move": None, "design": None})
+        validate_contacts(stage.contacts, stage.props, set(actors), frames)
+        return stage.model_copy(update={"actors": actors})
 
     @model_validator(mode="after")
     def require_cast_voices(self) -> Storyboard:
         if self.height != 360 and any(shot.stage is None for shot in self.shots):
             raise ValueError("native HD requires 3D stage shots throughout the storyboard")
         for shot in self.shots:
+            if shot.stage:
+                self.directed_stage(shot.stage, shot.seconds * 24)
             for line in shot.dialogue:
                 if line.audio is None and line.character not in self.voices:
                     raise ValueError(f"no voice assigned to {line.character!r}")
@@ -129,7 +168,7 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
         if shot.stage is not None:
             video, stage = render_stage(
                 binary,
-                shot.stage,
+                board.directed_stage(shot.stage, shot.seconds * 24),
                 shot.camera,
                 shot.seconds,
                 manifest.parent,

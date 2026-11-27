@@ -350,3 +350,57 @@ neutral at that pose. Values ease between poses and hold outside them.
 The speaker's audio drives the mouth independently. These acting controls
 target the built-in cast. Custom characters need their own modeled geometry,
 rigs and animation in the GLB.
+
+### Full-body acting and prop handoffs
+
+Render the silent, fixed-camera biscuit gag from the repository root.
+
+```bash
+animalite story-render examples/biscuit-handoff.json \
+    --workspace work/biscuit --profile classical-warp-baseline
+```
+
+Use a cinematic stage with built-in actors. A storyboard-level `cast` entry
+sets skin, shirt, costume, overall `size`, and `limb_scale`. A shot selects the
+design with `"design": "Milo"` and positions it with `x` and `y`. Each actor
+can select a reusable `move` or supply a `motion`. Four built-in moves are
+available: `peek`, `recoil`, `offer`, and `sidestep`. A storyboard can add or
+override named `moves`. A nonempty shot-local track replaces that track in
+the selected move. Saved shot data contains the expanded design and tracks.
+
+Beats use **one-based delivery frames** at 24 fps. Each beat moves from its
+previous value at `frame` to its destination at `end`. Equal start/end frames
+make an immediate change. Gaps hold the previous pose. Tracks can overlap
+one another. Beats on the same track must be ordered and disjoint. Use the
+default smooth easing or `"ease": "linear"`.
+
+| Track in `motion` | How to direct it |
+| --- | --- |
+| `body` | Set a pelvis `offset` from rest in actor-local units, a sideways spine `lean`, and a torso `turn` in degrees. |
+| `left_foot`, `right_foot` | Move an ankle by an offset from its planted position. Use two beats to lift and land a foot. Grounded feet stay in place as the pelvis moves. |
+| `left_hand`, `right_hand` | Reach a `target` and optionally set wrist `rotation` in world XYZ degrees. Elbows and knees use a two-segment IK solve. Left and right belong to the actor. |
+| `eyes`, `head` | Give each a target and its own timing. To lead a reaction with the eyes, start the head beat several frames later. |
+
+A `target` can specify a world `point`, an actor-relative `local` point, an
+`actor` to look at, or a `prop` with an optional named `grip`. An optional
+world-space `offset` adjusts the aim. Completed reaches and looks keep
+tracking a moving target. Facial acting and spoken mouth cues still work.
+
+Stage `props` can be a `biscuit`, `tin`, `ball`, or `box`. Give each a
+world `position`, optional initial XYZ `rotation` in degrees, color, size and
+local grip coordinates. Every prop has a `center` grip. In the example the
+two hands meet opposite edges of the biscuit:
+
+```json
+{"frame": 43, "action": "grasp", "actor": "Milo", "hand": "left", "prop": "Biscuit", "grip": "edge"}
+```
+
+At frame 91 a `handoff` names **Max's receiving hand** and the `other` grip.
+The current owner supplies the donor. The prop keeps its world pose at the
+transfer and subsequently follows the receiving wrist's translation and
+rotation. A `release` leaves the prop at its last world pose. A hand holds one
+prop at a time. Schedule the reach to arrive on the contact frame. The renderer
+rejects missed grips (over 0.002 scene units), unreachable limbs and circular
+hand/prop targets with the offending frame. This workflow uses authored contacts.
+Free-falling objects, collisions and custom imported skeletons need separately
+authored animation.

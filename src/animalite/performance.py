@@ -13,6 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import Field, FiniteFloat, model_validator
 
+from animalite.choreography import CharacterDesign, Contact, Motion, Prop
 from animalite.contracts.base import Contract
 from animalite.errors import ValidationRejected
 from animalite.proc import run_capture
@@ -61,12 +62,12 @@ class Cinema(Contract):
     denoise: bool = True
 
 
-class Actor(Contract):
+class Actor(CharacterDesign):
+    design: str | None = None
+    move: str | None = None
+    motion: Motion | None = None
     x: FiniteFloat = 0
     y: FiniteFloat = 0
-    skin: Color = "#94B979"
-    shirt: Color = "#E69345"
-    costume: Literal["cap", "forelock"] = "forelock"
     acting: list[ActingPose] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -91,6 +92,8 @@ class Stage(Contract):
     orbit: Orbit = Orbit()
     cinema: Cinema | None = None
     actors: dict[str, Actor] = Field(default_factory=dict)
+    props: dict[str, Prop] = Field(default_factory=dict)
+    contacts: list[Contact] = Field(default_factory=list)
     model: Path | None = None
     # Character -> imported mesh with AL_open, AL_round, AL_wide shape keys.
     bindings: dict[str, str] = Field(default_factory=dict)
@@ -99,8 +102,17 @@ class Stage(Contract):
     def scene_source(self) -> Stage:
         if bool(self.actors) == (self.model is not None):
             raise ValueError("choose either built-in actors or an embedded GLB model")
+        if (self.props or self.contacts) and (self.model or self.cinema is None):
+            raise ValueError("prop choreography requires built-in cinematic actors")
         if self.cinema is None and any(
-            a.acting or a.costume != "forelock" for a in self.actors.values()
+            a.acting
+            or a.costume != "forelock"
+            or a.motion
+            or a.move
+            or a.design
+            or a.size != 1
+            or a.limb_scale != 1
+            for a in self.actors.values()
         ):
             raise ValueError("costumes and acting poses require stage.cinema")
         if self.cinema and self.cinema.set == "asset" and self.model is None:

@@ -3,6 +3,8 @@
 # mypy: allow-untyped-defs, allow-untyped-calls
 from __future__ import annotations
 
+from typing import Any
+
 import _cycles  # type: ignore[import-not-found]
 import bpy  # type: ignore[import-not-found]
 from mathutils import Vector  # type: ignore[import-not-found]
@@ -78,12 +80,16 @@ def rounded_box(name, pos, size, mat, radius=0.06):
     return obj
 
 
-def sculpt(name, spec, frames, rgba, add_mouth_keys):
+def sculpt(name, spec, frames, rgba, add_mouth_keys, rigs=None):
     root = pivot(name, (spec["x"], spec["y"], 0.04))
     head = pivot(name + ".head", (0, 0, 1.52), root)
 
+    parts: dict[str, list[Any]] = {}
+
     def part(label, position, scale, tone, finish, parent):
-        return ellipsoid(name + "." + label, position, scale, material(tone, finish, rgba), parent)
+        obj = ellipsoid(name + "." + label, position, scale, material(tone, finish, rgba), parent)
+        parts.setdefault(label, []).append(obj)
+        return obj
 
     skin = spec["skin"]
     cloth = spec["shirt"]
@@ -155,6 +161,10 @@ def sculpt(name, spec, frames, rgba, add_mouth_keys):
     for vertex in smile.data:
         vertex.co.z += 2.8 * vertex.co.x**2
     animate(spec, frames, root, head, gaze, lids, brows, arms, smile)
+    if rigs is not None:
+        from blender_blocking import make_rig  # type: ignore[import-not-found]
+
+        rigs[name] = make_rig(name, spec, root, head, gaze, arms, parts, pivot, part)
     return mouth
 
 
