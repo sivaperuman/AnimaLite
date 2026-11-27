@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from math import floor, sin
 
-from animalite.dog_walk import GROUND, DogWalk, Pose, ease
+from animalite.dog_walk import GROUND, DogWalk, Pose, ease, picture_to_stage
 
 INK = "#253645"
 LEAD_COLOR = "#e35232"
@@ -87,6 +87,8 @@ def handler(p: Pose, mouth: tuple[float, float, float]) -> str:
         knee = hip + 0.49 * delta + complex(7 + 19 * p.seated, -7 - 7 * i)
         air_knee = hip + complex(-17 - 6 * i, 19 + 7 * i)
         knee += (air_knee - knee) * p.lift
+        if p.fall:
+            knee = picture_to_stage((p.fall.body.far_knee, p.fall.body.near_knee)[i], p.camera_x)
         out.append(limb(hip, knee, foot - 4j, ("#60717b", INK)[i], 4.7))
         out.append(path(f"M{xy(foot - 5 - 6j)}q3-2 8 0l8 3q3 1 2 4h-19z", INK, 1.8, "#eddba9"))
     elbow = (sh + p.free_hand) / 2 + complex(-13, 5)
@@ -94,14 +96,15 @@ def handler(p: Pose, mouth: tuple[float, float, float]) -> str:
     out.append(ellipse(p.free_hand, 3.8, 4.1, INK))
     out.append(path(f"M{xy(sh - 3)}q6-4 12 1L{xy(hip + 8)}q-7 5-17 1z", INK, 2.5, "#438e97"))
     out.append(path(f"M{xy(sh + 1j)}q6 7 12 1l-3 7-5 1-8 9 2-12z", "#a54e35", 1.1, "#ef7952"))
-    grip = p.lead.hand
+    grip = picture_to_stage(p.fall.body.grip, p.camera_x) if p.fall else p.lead.hand
     elbow = (sh + grip) / 2 + complex(-5, 14 - 11 * p.lift)
     out.append(limb(sh + 4 + 3j, elbow, grip, INK, 4.8))
     out.append(ellipse(grip, 4.4, 4.2, INK))
     worry = ease(p.t, 43, 54) - ease(p.t, 130, 150)
     blink = min(1.0, min(abs(p.t - f) / 2 for f in (23, 129, 153, 213)))
     tilt = -6 - 15 * p.lift + 11 * p.seated
-    out.append(f'<g transform="translate({xy(head)}) rotate({tilt:.1f})">')
+    head_scale = 1.52 - 0.16 * p.lift if p.fall else 1.0
+    out.append(f'<g transform="translate({xy(head)}) rotate({tilt:.1f}) scale({head_scale:.3f})">')
     out.append(
         '<path d="M-21-5q0-19 20-20 20-1 23 18l-1 15q-4 17-21 16-16-1-21-19z" '
         'fill="#fff0d6" stroke="#253645" stroke-width="3"/>'
@@ -188,14 +191,14 @@ def terrier(p: Pose) -> str:
 
 def project(p: Pose, action: DogWalk, point: complex) -> complex:
     sign = 1 if action.direction == "right" else -1
-    center = p.camera_x - 19 * p.lift
+    center = p.camera_x if p.fall else p.camera_x - 19 * p.lift
     return complex(180 + sign * (point.real - center) * 1.42, 475 + (point.imag - GROUND) * 1.42)
 
 
 def artwork(p: Pose, action: DogWalk, width: int, mouth: tuple[float, float, float]) -> str:
     height = width * 16 // 9
     sign = 1 if action.direction == "right" else -1
-    center = p.camera_x - 19 * p.lift
+    center = p.camera_x if p.fall else p.camera_x - 19 * p.lift
     origin = project(p, action, 0j)
     out = [
         f'<svg xmlns="http://www.w3.org/2000/svg" '
@@ -208,12 +211,16 @@ def artwork(p: Pose, action: DogWalk, width: int, mouth: tuple[float, float, flo
         f'<g transform="translate({xy(origin)}) scale({sign * 1.42} 1.42)" '
         'stroke-linejoin="round" stroke-linecap="round">',
     ]
-    out.append(ellipse(complex(p.hip.real + 4, GROUND + 1), 22 - 9 * p.lift, 2.3, "#b2ae9d"))
-    out.append(ellipse(complex(p.dog.real, GROUND + 1), 23, 2.0, "#b2ae9d"))
+    floor_y = max(paw.tip.imag for paw in p.paws) if p.fall else GROUND
+    out.append(ellipse(complex(p.hip.real + 4, floor_y + 1), 22 - 9 * p.lift, 2.3, "#b2ae9d"))
+    out.append(ellipse(complex(p.dog.real, floor_y + 1), 23, 2.0, "#b2ae9d"))
     lead = p.lead
     out.extend((terrier(p), handler(p, mouth)))
     out.append(path(f"M{xy(lead.hand)}Q{xy(lead.control)} {xy(lead.collar)}", LEAD_COLOR, 2.7))
-    out.append(ellipse(lead.hand, 3.9, 3.6, INK))
+    if p.fall and (p.fall.slack > 0.5 or p.fall.release > 0.5):
+        out.append(path(f"M{xy(lead.hand)}q-10 -5 -12 1t12 -1", LEAD_COLOR, 2.7))
+    else:
+        out.append(ellipse(lead.hand, 3.9, 3.6, INK))
     out.append(ellipse(lead.collar, 2.7, 2.7, INK))
     out.append(ellipse(lead.collar, 1.5, 1.5, "#eeb665"))
     if action.contact_overlay:

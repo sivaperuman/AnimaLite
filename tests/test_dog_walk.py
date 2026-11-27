@@ -128,3 +128,39 @@ def test_portrait_slices_replay_sigh_and_visible_leash(tmp_path, tools, capsys):
             # The decoded warm-red lead must be visible at its predicted position.
             red, green, blue = patch[:, :, 0], patch[:, :, 1], patch[:, :, 2]
             assert np.any((red > 160) & (red - green > 72) & (green - blue > 8)), (i, u)
+
+
+def test_fall_separates_the_lead_drop_impact_and_recovery():
+    action = DogWalk(performance="fall-and-recover")
+    start, loose, flight, impact, hold, seated = [
+        pose(i, action) for i in (0, 24, 72, 148, 167, 188)
+    ]
+    for state in (start, loose, flight, impact, hold, seated):
+        assert state.fall is not None
+        face = project(state, action, state.face)
+        assert face == pytest.approx(state.fall.body.face * 2.5)
+    assert start.camera_x == loose.camera_x < flight.camera_x < impact.camera_x
+    assert (
+        loose.fall
+        and loose.fall.slack == 1
+        and loose.fall.lead_end.imag > loose.fall.body.grip.imag + 45
+    )
+    assert flight.lift == 1 and flight.fall and flight.fall.lead_end == flight.fall.body.grip
+    assert impact.fall and hold.fall and impact.fall.prone == hold.fall.prone == 1
+    assert impact.fall.release == 1 and impact.seated == hold.seated == 0
+    assert (
+        hold.fall.body.face.imag > 185
+        and abs(hold.fall.body.hip.imag - hold.fall.body.neck.imag) < 8
+    )
+    assert seated.seated == 1 and seated.fall and seated.fall.body.face.imag < 137
+    assert impact.camera_x == hold.camera_x == seated.camera_x
+
+
+def test_fall_paw_world_contacts_and_vector_attachment():
+    frames = [pose(i, DogWalk(performance="fall-and-recover")) for i in range(FRAMES)]
+    for state in frames:
+        assert state.lead.collar == state.dog + complex(17, -12)
+    for before, after in pairwise(frames):
+        for first, second in zip(before.paws, after.paws, strict=True):
+            if first.planted and second.planted:
+                assert first.tip == second.tip

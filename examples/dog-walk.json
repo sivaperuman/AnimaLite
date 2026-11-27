@@ -4,9 +4,9 @@
   "height": 1280,
   "voices": {"Milo": "awb"},
   "shots": [{
-    "action": "Pepper spots something, bows, dashes and tows Milo. Milo lands sitting on the sidewalk. Pepper looks back.",
+    "action": "Pepper spots something, bows, dashes and tows Milo. Milo sprawls on the sidewalk, pushes up, then sits. Pepper turns back.",
     "seconds": 10,
-    "dog_walk": {"direction": "right", "launch_frame": 44},
+    "dog_walk": {"direction": "right", "launch_frame": 44, "performance": "fall-and-recover"},
     "dialogue": [
       {"character": "Milo", "start_ms": 150, "text": "A nice, quiet walk."},
       {"character": "Milo", "start_ms": 2530, "text": "Pepper! Those are my feet!"},

@@ -58,6 +58,9 @@ def render_dog_walk(
                 "paws_stage_px": [pair(paw.tip) for paw in p.paws],
                 "planted": [paw.planted for paw in p.paws],
             }
+            if p.fall:
+                contact["lead_gripped"] = p.fall.slack == 0 and p.fall.release == 0
+                contact["prone"] = p.fall.prone
             contacts.write(json.dumps(contact) + "\n")
     output = folder / "shot.mp4"
     ffmpeg(

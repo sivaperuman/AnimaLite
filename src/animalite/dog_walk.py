@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import Field
 
 from animalite.contracts.base import Contract
+from animalite.dog_walk_fall import FallBlocking, blocking
 
 FPS = 24
 FRAMES = 240
@@ -22,6 +23,7 @@ class DogWalk(Contract):
     direction: Literal["right", "left"] = "right"
     launch_frame: int = Field(default=44, ge=30, le=60)
     start_frame: int = Field(default=0, ge=0, lt=FRAMES)
+    performance: Literal["walk-and-sit", "fall-and-recover"] = "walk-and-sit"
     contact_overlay: bool = False
     handler: str = Field(default="Milo", min_length=1)
 
@@ -107,6 +109,61 @@ class Pose:
     seated: float
     look_back: float
     camera_x: float
+    fall: FallBlocking | None = None
+
+
+def picture_to_stage(point: complex, camera: float) -> complex:
+    return complex(
+        camera + (point.real * 2.5 - 180) / 1.42, GROUND + (point.imag * 2.5 - 475) / 1.42
+    )
+
+
+def fall_pose(t: float) -> Pose:
+    f = blocking(t)
+    body = f.body
+    camera = f.camera * 2.5 / 1.42
+
+    def world(point: complex) -> complex:
+        return picture_to_stage(point, camera)
+
+    dog = world(body.dog)
+    paws = []
+    # Compute pavement height at the planted world coordinate. Body bounce
+    # and a late seated dog must not move a planted foot.
+    rest_x = (
+        picture_to_stage(103 + 171j, 426.5 * 2.5 / 1.42).real
+        if t > 100
+        else picture_to_stage(90 + 194j, 0).real
+    )
+    for offset, phase in ((-17, 0.56), (16, 0.08), (-19, 0.01), (18, 0.54)):
+        walking = gait(dog.real, offset, phase, 72, 0, 0.46)
+        x = (rest_x + offset) * (1 - f.sprint) + walking.tip.real * f.sprint
+        ground_y = 214 - 23 * ease(x * 1.42 / 2.5, 21, 459)
+        y = world(complex(0, ground_y)).imag + walking.tip.imag * f.sprint
+        paws.append(Paw(complex(x, y), f.sprint == 0 or (f.sprint == 1 and walking.planted)))
+    # The vector terrier has its own collar attachment relative to the torso.
+    collar = dog + complex(17, -12)
+    collar_offset = collar - world(f.collar)
+    return Pose(
+        t,
+        dog,
+        tuple(paws),
+        Leash(
+            world(f.lead_end) + collar_offset * f.release,
+            world(f.lead_control) + collar_offset * ((1 + f.release) / 2),
+            collar,
+        ),
+        world(body.hip),
+        world(body.neck),
+        world(body.face),
+        (world(body.far_foot), world(body.near_foot)),
+        world(body.free),
+        f.lift,
+        f.seated,
+        f.turn,
+        camera,
+        f,
+    )
 
 
 def pose(frame: int, action: DogWalk) -> Pose:
@@ -119,6 +176,9 @@ def pose(frame: int, action: DogWalk) -> Pose:
         t = 44 + (frame - action.launch_frame) * 78 / (122 - action.launch_frame)
     else:
         t = float(frame)
+
+    if action.performance == "fall-and-recover":
+        return fall_pose(t)
 
     walk = 34 * ease(t, 0, 31)
     distance = walk + 285 * ease(t, 44, 126)

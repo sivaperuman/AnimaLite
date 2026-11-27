@@ -652,3 +652,9 @@ The prototype entry point, optional dependencies and exact reproduction commands
 - With an intentionally missing FFprobe the render exited 1, recorded `ToolUnavailableError` in the new attempt and published no video.
 - The direct combined suite produced 230 passes and one failure in the existing descendant-teardown test. The reported child was a zombie adopted by PID 1 (`tail`) on this host. The unchanged test passed when run under a Linux child subreaper. The unchanged combined suite then passed all 231 tests in 125.71 s under the subreaper. The downloadable review bundle in the shared workspace contains both transcripts and the wrapper.
 - Both complete backend pairs had identical repeated RGB and MP4 hashes per backend. FFmpeg `-xerror -err_detect explode` decoded both candidates and the side-by-side to completion. The review package includes FFprobe JSON, frame-indexed screenshots, raw manifests and RSS samples.
+
+## Opening-frame dog-walk development shot
+
+On Python 3.12.14 and FFmpeg 7.1.5, the revised `examples/dog-walk.json` rendered 240 frames at 720 × 1280 through `animalite story-render`. The separate `spikes/dog_walk_frame0/render.py` entry point rendered 240 frames at the uploaded 144 × 256 resolution. The first decoded YUV picture matched the source byte for byte. The silent MP4 SHA-256 was `8fb5c6d94d09ca470a2d3557cbdc90a0865b7018c1999349467147e8f8898fd6`.
+
+On this calibrated clip, the mean of the per-frame FFmpeg luma SSIM values over frames 1–239 was 0.4697 for the new cutout, 0.3572 for the previous cutout and 0.4068 for a held opening frame. All three comparisons used native resolution and presentation-frame index. The background's median leftward displacement in the sampled house bands, frames 48–120, was 4.27 pixels per frame in the new take and 4.19 in the reference. This is an authored development result.
