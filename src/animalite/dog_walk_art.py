@@ -140,13 +140,12 @@ def handler(p: Pose, mouth: tuple[float, float, float]) -> str:
 def terrier(p: Pose) -> str:
     d = p.dog
     out = []
-    for i, paw in enumerate(p.paws):
-        root = d + complex((-14, 15, -16, 14)[i], 1)
-        knee = (root + paw.tip) / 2 + complex((-7, 3, -5, 4)[i], 1)
+    for i, leg in enumerate(p.legs):
         color = "#ccac87" if i < 2 else "#fff1d9"
-        out.append(limb(root, knee, paw.tip - 2j, INK, 6))
-        out.append(limb(root, knee, paw.tip - 2j, color, 3.1))
-        out.append(ellipse(paw.tip + 1 - 2j, 4.2, 2.1, INK))
+        d_leg = f"M{xy(leg.root)} L{xy(leg.joint)} L{xy(leg.ankle)} L{xy(leg.tip - 1.5j)}"
+        out.append(path(d_leg, INK, 5.4))
+        out.append(path(d_leg, color, 3.1))
+        out.append(ellipse(leg.tip - 1.5j, 3.1, 1.5, INK))
     wag = sin(p.t * 0.37)
     out.append(f'<g transform="translate({xy(d)})">')
     out.append(

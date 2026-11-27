@@ -1,0 +1,158 @@
+{
+  "story": "A country lane, two dogs, one gallop.",
+  "height": 360,
+  "dogs": {
+    "Pepper": {
+      "trunk": 97,
+      "silhouette": "floppy",
+      "rig": {
+        "shoulder_height": 0.55,
+        "hip_height": 0.53,
+        "root_spacing": 0.62
+      },
+      "coat": "#fff7e9",
+      "shadow": "#d2c3b1",
+      "marking": "#e5d7c8",
+      "collar": "#b8443d",
+      "head_drawings": {
+        "painted-anime": {
+          "profile": {
+            "image": "pepper-profile.png",
+            "anchor_x": 0.37,
+            "anchor_y": 0.82,
+            "size_in_trunks": 0.68
+          },
+          "three-quarter": {
+            "image": "pepper-three-quarter.png",
+            "anchor_x": 0.37,
+            "anchor_y": 0.82,
+            "size_in_trunks": 0.68
+          }
+        }
+      }
+    },
+    "Reed": {
+      "trunk": 118,
+      "silhouette": "sighthound",
+      "rig": {
+        "shoulder_height": 0.81,
+        "hip_height": 0.78,
+        "root_spacing": 0.74
+      },
+      "coat": "#d49b68",
+      "shadow": "#a16c53",
+      "marking": "#73534c",
+      "collar": "#237b77",
+      "head_drawings": {
+        "painted-anime": {
+          "profile": {
+            "image": "reed-profile.png",
+            "anchor_x": 0.31,
+            "anchor_y": 0.82,
+            "size_in_trunks": 0.65
+          },
+          "three-quarter": {
+            "image": "reed-three-quarter.png",
+            "anchor_x": 0.31,
+            "anchor_y": 0.82,
+            "size_in_trunks": 0.65
+          }
+        }
+      }
+    }
+  },
+  "shots": [
+    {
+      "action": "Pepper gallops along the countryside lane and glances at the camera.",
+      "seconds": 4,
+      "gallop": {
+        "dog": "Pepper",
+        "look": "ink",
+        "direction": "right",
+        "speed": 2.6,
+        "extension": 1,
+        "camera_follow": 0.84,
+        "backdrop": "lane.jpg",
+        "head_cues": [
+          {
+            "frame": 38,
+            "view": "three-quarter"
+          },
+          {
+            "frame": 62,
+            "view": "profile"
+          }
+        ]
+      }
+    },
+    {
+      "action": "Pepper gallops along the countryside lane and glances at the camera.",
+      "seconds": 4,
+      "gallop": {
+        "dog": "Pepper",
+        "look": "painted-anime",
+        "direction": "right",
+        "speed": 2.6,
+        "extension": 1,
+        "camera_follow": 0.84,
+        "backdrop": "lane.jpg",
+        "head_cues": [
+          {
+            "frame": 38,
+            "view": "three-quarter"
+          },
+          {
+            "frame": 62,
+            "view": "profile"
+          }
+        ]
+      }
+    },
+    {
+      "action": "Reed gallops along the countryside lane and glances at the camera.",
+      "seconds": 4,
+      "gallop": {
+        "dog": "Reed",
+        "look": "ink",
+        "direction": "left",
+        "speed": 3.6,
+        "extension": 1.08,
+        "camera_follow": 0.6,
+        "backdrop": "lane.jpg",
+        "head_cues": [
+          {
+            "frame": 38,
+            "view": "three-quarter"
+          },
+          {
+            "frame": 62,
+            "view": "profile"
+          }
+        ]
+      }
+    },
+    {
+      "action": "Reed gallops along the countryside lane and glances at the camera.",
+      "seconds": 4,
+      "gallop": {
+        "dog": "Reed",
+        "look": "painted-anime",
+        "direction": "left",
+        "speed": 3.6,
+        "extension": 1.08,
+        "camera_follow": 0.6,
+        "backdrop": "lane.jpg",
+        "head_cues": [
+          {
+            "frame": 38,
+            "view": "three-quarter"
+          },
+          {
+            "frame": 62,
+            "view": "profile"
+          }
+        ]
+      }
+    }
+  ]
+}

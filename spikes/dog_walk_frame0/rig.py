@@ -11,6 +11,7 @@ from scipy.spatial import Delaunay
 from street import Panorama
 
 from animalite.dog_walk import DogWalk, pose
+from animalite.dog_walk_art import project
 
 S = 3
 W, H = 144 * S, 256 * S
@@ -588,7 +589,7 @@ class OpeningRig:
         box = np.maximum(0, 1 - ((self.xx / S - x) / rx) ** 2 - ((self.yy / S - y) / ry) ** 2)
         can[:] = np.rint(can * (1 - alpha * box[:, :, None] ** 0.59)).astype(np.uint8)
 
-    def draw_dog(self, can, t, f):
+    def draw_dog(self, can, t, f, state):
         ctr = self.pt(f.body.dog)
         phase = (t - 49) * 2 * pi / 12
         run = f.sprint
@@ -635,14 +636,11 @@ class OpeningRig:
             return pts + ctr
 
         if stride > 0.01:
-            # Paired gallop. Each paw sweeps behind the body during stance,
-            # folds high on recovery and extends forward before contact.
-            for k, (x, shift) in enumerate(((-10, 0.49), (9, 0.03), (-12, 0.62), (10, 0.17))):
-                ph = phase + 2 * pi * shift
-                root = ctr + v(x, 2.5) * zoom
-                tip = root + v(13.2 * sin(ph), 15.3 - 8.2 * max(0, cos(ph)))
-                knee = blend(root, tip, 0.53) + v((-3.6 if x < 0 else 3.0), -3.4 - 2.0 * cos(ph))
-                paw = tip + v(2.4, 0.5)
+            for k, leg in enumerate(state.legs):
+                root, knee, tip, paw = (
+                    self.pt(project(state, self.action, point) / 2.5)
+                    for point in (leg.root, leg.joint, leg.ankle, leg.tip - 2.4j)
+                )
                 dst = can.copy() if stride < 1 else can
                 stroke(dst, [root, knee, tip, paw], (62, 58, 57), 4.45)
                 stroke(
@@ -738,7 +736,7 @@ class OpeningRig:
                 + np.c_[(-9 + 0.80 * a + 4.2 * np.cos(a)) * recoil, (-2 + 2.5 * np.sin(a)) * recoil]
             )
             stroke(can, spring, (110, 104, 161), 0.85)
-        self.draw_dog(can, t, f)
+        self.draw_dog(can, t, f, p)
         ink = (23, 22, 22)
         for j, (k, ankle) in enumerate(((b.far_knee, b.far_foot), (b.near_knee, b.near_foot))):
             foot = self.pt(ankle)

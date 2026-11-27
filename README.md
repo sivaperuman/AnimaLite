@@ -443,6 +443,33 @@ pixels, projected handler and dog landmarks, four paw positions in stage units
 (far hind, far fore, near hind, near fore) and their support flags. A stage unit is one pixel in the
 unprojected 360 by 640 scene, positive x along the direction of travel.
 
+### Direct a reusable dog gallop
+
+Run the countryside storyboard to see a short-legged dog and a sighthound in
+ink and painted anime. Both use the same four-leg motion as the sprint in the
+opening-frame dog-walk experiment.
+
+```bash
+animalite story-render examples/countryside/gallop.json --workspace work/countryside
+animalite story-schema
+```
+
+The storyboard defines each dog once under `dogs`. In a shot, choose the dog's
+name and change its `look`, `direction`, `speed` (trunk lengths per second),
+`extension` (stride multiplier), or `camera_follow` (1 holds the dog at its
+initial screen position, lower values allow more lead room). The feet
+stay anchored in the scene during stance as the camera moves. Each shot exports
+its joints, paws and contact flags in `gallop-N/contacts.jsonl`.
+
+To direct a head turn from chat, use the JSON schema and edit `head_cues`. For
+example, `[{"frame":38,"view":"three-quarter"},{"frame":62,"view":"profile"}]`
+makes the dog glance at the viewer for one second at 24 fps. For new characters,
+supply transparent head drawings with a normalized neck pivot and a size in
+trunk lengths under `dogs.<name>.head_drawings.<look>`. The example includes
+four generated head drawings and a painted countryside background. Paths are
+relative to the storyboard. Each run saves the referenced artwork alongside
+its replayable `storyboard.json`.
+
 ### Harbour 2D performance demo
 
 Milo waves, walks to the bus, calls out to Max, then runs to hand over a lunchbox.

@@ -9,6 +9,8 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from animalite.canine import DogDesign, GallopShot
+from animalite.canine_render import render_gallop, retain_design, retain_image
 from animalite.choreography import (
     CharacterDesign,
     Motion,
@@ -57,13 +59,23 @@ class StoryShot(Contract):
     poses: list[Pose] = Field(default_factory=list, max_length=4)
     stage: Stage | None = None
     dog_walk: DogWalk | None = None
+    gallop: GallopShot | None = None
     mouths: dict[str, Mouth] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def check_timing(self) -> StoryShot:
         frames = [pose.frame for pose in self.poses]
         end = self.seconds * P_L_FINAL_OUTPUT.cadence.animation_fps - 1
-        if self.dog_walk:
+        if self.gallop:
+            if self.dog_walk or self.stage or self.poses or self.mouths:
+                raise ValueError("gallop is a self-contained Studio action")
+            if self.camera != Camera() or self.timing != AnchorTiming.LINEAR:
+                raise ValueError(
+                    "use gallop.camera_follow and gallop.speed to direct the camera and pace"
+                )
+            if any(cue.frame >= self.seconds * 24 for cue in self.gallop.head_cues):
+                raise ValueError("gallop head cue extends beyond the shot")
+        elif self.dog_walk:
             if self.stage or self.poses or self.mouths:
                 raise ValueError("dog_walk is a self-contained Studio action")
             if self.camera != Camera() or self.timing != AnchorTiming.LINEAR:
@@ -89,6 +101,7 @@ class StoryShot(Contract):
 
 
 class Storyboard(Document):
+    dogs: dict[str, DogDesign] = Field(default_factory=dict)
     cast: dict[str, CharacterDesign] = Field(default_factory=dict)
     moves: dict[str, Motion] = Field(default_factory=dict)
     height: Literal[360, 640, 720, 1080, 1280] = 360
@@ -138,11 +151,15 @@ class Storyboard(Document):
             )
         if any(shot.dog_walk for shot in self.shots) and not portrait:
             raise ValueError("dog_walk requires a 9:16 storyboard")
-        if self.height != 360 and any(not (shot.stage or shot.dog_walk) for shot in self.shots):
+        if self.height != 360 and any(
+            not (shot.stage or shot.dog_walk or shot.gallop) for shot in self.shots
+        ):
             raise ValueError(
                 "native HD and portrait require staged shots throughout the storyboard"
             )
         for shot in self.shots:
+            if shot.gallop and shot.gallop.dog not in self.dogs:
+                raise ValueError(f"unknown dog design {shot.gallop.dog}")
             if shot.stage:
                 self.directed_stage(shot.stage, shot.seconds * 24)
             for line in shot.dialogue:
@@ -163,6 +180,9 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
     workspace.mkdir(parents=True, exist_ok=True)
     run = Path(mkdtemp(prefix="story-", dir=workspace)).resolve()
     prepared_shots: list[StoryShot] = []
+    dogs = {
+        name: retain_design(design, manifest.parent, run) for name, design in board.dogs.items()
+    }
     service = LocalExecutionService(run / "jobs")
     binary = service.tools.ffmpeg_path
     playlist: list[str] = []
@@ -203,6 +223,25 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
             if shot.mouths or shot.stage or shot.dog_walk
             else {}
         )
+        if shot.gallop:
+            action = shot.gallop
+            if action.backdrop:
+                action = action.model_copy(
+                    update={"backdrop": retain_image(action.backdrop, manifest.parent, run)}
+                )
+            video = render_gallop(
+                binary,
+                action,
+                dogs[action.dog],
+                shot.seconds,
+                board.width,
+                board.height,
+                run,
+                run / f"gallop-{number}",
+            )
+            prepared_shots.append(shot.model_copy(update={"gallop": action}))
+            playlist.append(f"file '{video.relative_to(run).as_posix()}'")
+            continue
         if shot.dog_walk:
             video = render_dog_walk(
                 binary, shot.dog_walk, shot.seconds, board.width, run / f"dog-walk-{number}", cues
@@ -307,7 +346,7 @@ def render_story(manifest: Path, workspace: Path, profile: str, purpose: Admissi
         ).relative_to(run)
         playlist.append(f"file '{clip.as_posix()}'")
     (run / "storyboard.json").write_text(
-        board.model_copy(update={"shots": prepared_shots}).model_dump_json(indent=2),
+        board.model_copy(update={"shots": prepared_shots, "dogs": dogs}).model_dump_json(indent=2),
         encoding="utf-8",
     )
     listing = run / "shots.ffconcat"

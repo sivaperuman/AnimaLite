@@ -55,7 +55,7 @@ from animalite.errors import AnimaLiteError, ValidationRejected
 from animalite.fixtures.generator import FIXTURE_CLIPS, generate_clip, write_anchor_set
 from animalite.hostinfo.inventory import collect_inventory
 from animalite.media.ffmpeg import FFmpegTools
-from animalite.story import render_story
+from animalite.story import Storyboard, render_story
 
 __all__ = ["build_parser", "main"]
 
@@ -236,6 +236,12 @@ def cmd_render(args: argparse.Namespace) -> int:
         )
     _note(_non_qualifying_banner(request.engine_profile_id, _registry()))
     return EXIT_OK if record.state is JobState.SUCCEEDED else EXIT_ERROR
+
+
+def cmd_story_schema(args: argparse.Namespace) -> int:
+    """Expose the same shot and cast contract that story-render validates."""
+    print(json.dumps(Storyboard.model_json_schema(), indent=2))
+    return 0
 
 
 def cmd_story_render(args: argparse.Namespace) -> int:
@@ -877,6 +883,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     render.set_defaults(func=cmd_render)
 
+    schema = sub.add_parser(
+        "story-schema", help="print the storyboard JSON schema for interactive direction"
+    )
+    schema.set_defaults(func=cmd_story_schema)
     story = sub.add_parser("story-render", help="render generated story poses and join shots")
     story.add_argument("storyboard", type=Path)
     story.add_argument("--workspace", type=Path, default=Path("work/stories"))

@@ -10,6 +10,7 @@ from pydantic import Field
 
 from animalite.contracts.base import Contract
 from animalite.dog_walk_fall import FallBlocking, blocking
+from animalite.gallop import DogRig, Leg, gallop_legs
 
 FPS = 24
 FRAMES = 240
@@ -109,6 +110,7 @@ class Pose:
     seated: float
     look_back: float
     camera_x: float
+    legs: tuple[Leg, ...]
     fall: FallBlocking | None = None
 
 
@@ -127,27 +129,23 @@ def fall_pose(t: float) -> Pose:
         return picture_to_stage(point, camera)
 
     dog = world(body.dog)
-    paws = []
-    # Compute pavement height at the planted world coordinate. Body bounce
-    # and a late seated dog must not move a planted foot.
     rest_x = (
         picture_to_stage(103 + 171j, 426.5 * 2.5 / 1.42).real
         if t > 100
         else picture_to_stage(90 + 194j, 0).real
     )
-    for offset, phase in ((-17, 0.56), (16, 0.08), (-19, 0.01), (18, 0.54)):
-        walking = gait(dog.real, offset, phase, 72, 0, 0.46)
-        x = (rest_x + offset) * (1 - f.sprint) + walking.tip.real * f.sprint
-        ground_y = 214 - 23 * ease(x * 1.42 / 2.5, 21, 459)
-        y = world(complex(0, ground_y)).imag + walking.tip.imag * f.sprint
-        paws.append(Paw(complex(x, y), f.sprint == 0 or (f.sprint == 1 and walking.planted)))
+
+    def pavement(x: float) -> float:
+        return world(complex(0, 214 - 23 * ease(x * 1.42 / 2.5, 21, 459))).imag
+
+    legs = gallop_legs(DogRig(), dog, 56, pavement, active=f.sprint, rest_center=rest_x)
     # The vector terrier has its own collar attachment relative to the torso.
     collar = dog + complex(17, -12)
     collar_offset = collar - world(f.collar)
     return Pose(
         t,
         dog,
-        tuple(paws),
+        tuple(Paw(leg.tip, leg.planted) for leg in legs),
         Leash(
             world(f.lead_end) + collar_offset * f.release,
             world(f.lead_control) + collar_offset * ((1 + f.release) / 2),
@@ -162,6 +160,7 @@ def fall_pose(t: float) -> Pose:
         f.seated,
         f.turn,
         camera,
+        legs,
         f,
     )
 
@@ -188,18 +187,9 @@ def pose(frame: int, action: DogWalk) -> Pose:
     sprint = ease(t, 47, 65) - ease(t, 111, 126)
     bounce = -3 * cos(2 * phase) * activity + 5 * sin(2 * phase) * sprint
     dog = complex(distance, GROUND - 30 + bounce + 5 * crouch)
-    paws = []
-    for offset, shift, ground in (
-        (-16, 0.57, GROUND - 3),
-        (16, 0.13, GROUND - 3),
-        (-18, 0.02, GROUND),
-        (17, 0.52, GROUND),
-    ):
-        paw = gait(distance, offset, shift, 54, ground, support=0.51 - 0.24 * sprint)
-        # Once translation stops, lower only the lifted feet to finish the stride.
-        landing = ease(t, 126, 140)
-        tip = complex(paw.tip.real, paw.tip.imag + (ground - paw.tip.imag) * landing)
-        paws.append(Paw(tip, paw.planted or landing == 1))
+    legs = gallop_legs(
+        DogRig(), dog, 48, lambda _x: GROUND, support=0.51 - 0.22 * sprint, settle=ease(t, 126, 140)
+    )
 
     collar = dog + complex(17, -12)
     lift = ease(t, 58, 72) - ease(t, 111, 130)
@@ -232,7 +222,7 @@ def pose(frame: int, action: DogWalk) -> Pose:
     return Pose(
         t,
         dog,
-        tuple(paws),
+        tuple(Paw(leg.tip, leg.planted) for leg in legs),
         leash(hand, collar),
         hip,
         shoulder,
@@ -243,4 +233,5 @@ def pose(frame: int, action: DogWalk) -> Pose:
         seated,
         look_back,
         (face.real + dog.real + 27) / 2,
+        legs,
     )

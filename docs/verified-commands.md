@@ -658,3 +658,25 @@ The prototype entry point, optional dependencies and exact reproduction commands
 On Python 3.12.14 and FFmpeg 7.1.5, the revised `examples/dog-walk.json` rendered 240 frames at 720 × 1280 through `animalite story-render`. The separate `spikes/dog_walk_frame0/render.py` entry point rendered 240 frames at the uploaded 144 × 256 resolution. The first decoded YUV picture matched the source byte for byte. The silent MP4 SHA-256 was `8fb5c6d94d09ca470a2d3557cbdc90a0865b7018c1999349467147e8f8898fd6`.
 
 On this calibrated clip, the mean of the per-frame FFmpeg luma SSIM values over frames 1–239 was 0.4697 for the new cutout, 0.3572 for the previous cutout and 0.4068 for a held opening frame. All three comparisons used native resolution and presentation-frame index. The background's median leftward displacement in the sampled house bands, frames 48–120, was 4.27 pixels per frame in the new take and 4.19 in the reference. This is an authored development result.
+
+## Reusable countryside gallop
+
+Four runs of `animalite story-render` used the two dogs and two looks from
+the [countryside storyboard](../examples/countryside/gallop.json). Each dog
+ran right for four seconds at 2.6 trunk lengths per second, then left for four
+seconds at 3.6 with 1.08× stride extension. All four outputs decoded to 192
+frames at 640 × 360 and 24 fps. Switching to the three-quarter drawing at
+frame 38 and back at 62 left the underlying limb positions identical between
+looks. The encoded head-cue test also reproduced its movie byte for byte after
+the input drawing was removed and the retained storyboard was replayed.
+
+Across these four runs, per-frame world-space paw displacement was zero for
+all 710 consecutive planted observations. An image check located the dark paw
+pad near the predicted position in both decoded pictures, omitting overlaps
+and ambiguous edges. For the 674 usable pairs, the median absolute horizontal
+displacement after subtracting camera motion was 0.25 output pixels, and the
+95th percentile was 0.72 pixels. These are measurements on this scene.
+
+With the same motion solver, the 144 × 256 opening-frame experiment preserved
+the first decoded reference picture. Mean luma SSIM over the other 239 frames
+was 0.46952, compared with 0.46971 for the preceding render.
