@@ -426,6 +426,40 @@ def footprints(side):
 steps = [footprints(False), footprints(True)]
 
 
+def run_height_keys():
+    start, end, *_ = bouts[1]
+    contacts = sorted(
+        (max(land, start), min(off, end))
+        for sequence in steps
+        for land, off, _, _ in sequence
+        if land < end and off > start
+    )
+    # Overlapping left/right stances are one period of support. Only a real
+    # gap between them can carry the body through a flight apex.
+    support = []
+    for land, off in contacts:
+        if support and land <= support[-1][1]:
+            support[-1] = (support[-1][0], max(off, support[-1][1]))
+        else:
+            support.append((land, off))
+    keys = [(start, 0.0)]
+    for i, (land, off) in enumerate(support):
+        if i:
+            keys.append(((support[i - 1][1] + land) / 2, -8.0))
+        keys.append(((land + off) / 2, 6.0))
+    return [*keys, (end, 0.0)]
+
+
+run_heights = run_height_keys()
+
+
+def run_bounce(t):
+    for (start, low), (end, high) in pairwise(run_heights):
+        if start <= t <= end:
+            return mix(low, high, sm((t - start) / (end - start)))
+    return 0.0
+
+
 def feet(t, side):
     seq = steps[side]
     last = seq[0]
@@ -483,7 +517,7 @@ def getpose(t):
     phW = (t - 2) / ((5.75 - 2) / 9 * 2)
     phR = (t - 9.14) / ((13.7 - 9.14) / 14 * 2)
     # The torso compresses after contact and rises through toe-off.
-    push = 5.3 * run * cos(4 * pi * phR - 0.95) + 2.2 * walk * cos(4 * pi * phW - 0.9)
+    push = run * run_bounce(t) + 2.2 * walk * cos(4 * pi * phW - 0.9)
     anticip = gate(t, 8.77, 9.06) * (1 - gate(t, 9.06, 9.58))
     settle = gate(t, 13.24, 13.6) * (1 - gate(t, 13.64, 14.12))
     give = gate(t, 13.03, 14.05)

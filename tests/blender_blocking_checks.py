@@ -3,6 +3,7 @@
 import json
 import sys
 from importlib import import_module
+from itertools import pairwise
 from pathlib import Path
 
 import bpy  # type: ignore[import-not-found]
@@ -18,6 +19,8 @@ def main():
     objects = bpy.data.objects
     anchors: dict[str, Vector] = {}
     lengths: dict[str, float] = {}
+    donor_curl = []
+    receiver_curl = []
 
     def pos(name):
         return objects[name].matrix_world.translation.copy()
@@ -26,8 +29,21 @@ def main():
         p = job["stage"]["props"][prop]
         return objects["Prop." + prop].matrix_world @ Vector(p["grips"][name])
 
+    def curl(wrist):
+        return next(c for c in objects[wrist].children if ".finger" in c.name).rotation_euler.x
+
     for frame in range(1, 145):
         scene.frame_set(frame)
+        donor_curl.append(curl("Milo.left.wrist"))
+        receiver_curl.append(curl("Max.right.wrist"))
+        if frame == 28:
+            reach_start = pos("Milo.left.wrist")
+        if frame == 35:
+            progress = (frame - 28) / (43 - 28)
+            progress = progress**2 * (3 - 2 * progress)
+            straight = reach_start.lerp(grip("Biscuit", "edge"), progress)
+            expected = straight + Vector((0, 0, 4 * progress * (1 - progress) * 0.055))
+            assert (pos("Milo.left.wrist") - expected).length < 1e-4
         for actor_name in ("Milo", "Max"):
             for side in ("left", "right"):
                 ankle = actor_name + "." + side + ".ankle"
@@ -68,6 +84,14 @@ def main():
         if frame == 92:
             assert (transfer - pos("Prop.Biscuit")).length < 1e-4
     assert abs(objects["Prop.Tin"].rotation_quaternion.angle) > 0.4
+    # Frame-indexed samples include the fully open and fully closed endpoints.
+    for samples, contact in [(donor_curl, 43), (receiver_curl, 91)]:
+        approach = samples[contact - 5 : contact]
+        assert abs(approach[0] - 0.10) < 1e-5 and abs(approach[-1] + 0.95) < 1e-5
+        assert all(a > b for a, b in pairwise(approach))
+    release = donor_curl[90:95]
+    assert abs(release[0] + 0.95) < 1e-5 and abs(release[-1] - 0.10) < 1e-5
+    assert all(a < b for a, b in pairwise(release))
     # Release a turned prop; its world transform must persist after the hand moves away.
     job["stage"]["contacts"].append(
         {
@@ -85,7 +109,11 @@ def main():
     scene.frame_set(128)
     held = objects["Prop.Biscuit"].matrix_world.copy()
     wrist = pos("Max.right.wrist")
+    assert abs(curl("Max.right.wrist") + 0.95) < 1e-5
+    scene.frame_set(130)
+    assert -0.95 < curl("Max.right.wrist") < 0.10
     scene.frame_set(144)
+    assert abs(curl("Max.right.wrist") - 0.10) < 1e-5
     assert (wrist - pos("Max.right.wrist")).length > 0.025
     assert all(
         abs(a - b) < 1e-5

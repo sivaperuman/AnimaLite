@@ -83,6 +83,7 @@ from animalite.errors import (
     JobCancelled,
     JobTimeoutError,
 )
+from animalite.media.cadence import AnchorTiming
 from animalite.media.decode import decode_image_rgb24
 from animalite.media.image import write_png_rgb24
 from animalite.proc import ProcessCancelled, ProcessTimeout, run_capture
@@ -94,7 +95,7 @@ RIFE_ADAPTER_KEY = "rife-ncnn"
 
 DEFAULT_MODEL = "rife-v4.6"
 
-_SUPPORTED_CONTROLS = ("model", "tta_spatial")
+_SUPPORTED_CONTROLS = ("model", "tta_spatial", "timing")
 
 #: Markers the upstream binary prints when Vulkan cannot be initialised. Their
 #: presence is positive evidence that no GPU was used *on that invocation*;
@@ -135,7 +136,7 @@ def _license_evaluation() -> LicenseEvaluationRef:
 RIFE_PROFILE = EngineProfile(
     profile_id="rife-ncnn-v4.6-cpu",
     display_name="RIFE v4.6 via ncnn, CPU-only (learned temporal interpolation)",
-    revision=1,
+    revision=2,
     adapter_key=RIFE_ADAPTER_KEY,
     engine_class=EngineClass.ML_ASSISTED,
     learned_temporal_participation=True,
@@ -164,7 +165,7 @@ RIFE_PROFILE = EngineProfile(
     thread_budget=ThreadBudget(
         total_threads=4, python_threads=1, inference_threads=2, encoder_threads=1
     ),
-    parameters={"model": DEFAULT_MODEL, "tta_spatial": False},
+    parameters={"model": DEFAULT_MODEL, "tta_spatial": False, "timing": AnchorTiming.LINEAR.value},
     weights=[
         ArtifactIdentity(
             kind="weights",
@@ -376,7 +377,9 @@ class RifeNcnnAdapter:
         return str(controls.get("model", profile.parameters.get("model", DEFAULT_MODEL)))
 
     @staticmethod
-    def _required_timesteps(anchors: AnchorSet, output: OutputSpec) -> list[float]:
+    def _required_timesteps(
+        anchors: AnchorSet, output: OutputSpec, timing: AnchorTiming = AnchorTiming.LINEAR
+    ) -> list[float]:
         """Timesteps the request will actually ask the model for.
 
         Returns what it can: a frame with no bracketing anchor pair is skipped
@@ -393,7 +396,7 @@ class RifeNcnnAdapter:
             right = [i for i in indices if i > frame_index]
             if not left or not right:
                 continue
-            steps.append((frame_index - max(left)) / (min(right) - max(left)))
+            steps.append(timing.timestep(frame_index, max(left), min(right)))
         return steps
 
     # -------------------------------------------------------------- section 6.3
@@ -490,6 +493,20 @@ class RifeNcnnAdapter:
                 )
             )
 
+        try:
+            timing = AnchorTiming.from_controls(controls)
+        except ValueError:
+            issues.append(
+                ValidationIssue(
+                    code=CodeVAL.CONTROL_VALUE_INVALID,
+                    severity=IssueSeverity.ERROR,
+                    field_path="controls.timing",
+                    message=f"unsupported timing {controls['timing']!r}",
+                    remediation="Use linear or ease-in-out.",
+                )
+            )
+            timing = None
+
         model_name = self._model_name(profile, controls)
         model = PINNED_MODELS.get(model_name)
         if model is None:
@@ -510,8 +527,8 @@ class RifeNcnnAdapter:
         # The rule that stops a silently-wrong result: a midpoint-only model
         # asked for any other timestep returns a plausible but temporally
         # incorrect frame.
-        if not model.supports_arbitrary_timestep:
-            needed = {round(t, 6) for t in self._required_timesteps(anchors, output)}
+        if not model.supports_arbitrary_timestep and timing is not None:
+            needed = {round(t, 6) for t in self._required_timesteps(anchors, output, timing)}
             off_midpoint = sorted(t for t in needed if abs(t - 0.5) > 1e-9)
             if off_midpoint:
                 issues.append(
@@ -584,6 +601,10 @@ class RifeNcnnAdapter:
         controls = context.effective_controls()
         model_name = self._model_name(profile, controls)
         tta = _tta_spatial(controls)
+        try:
+            timing = AnchorTiming.from_controls(controls)
+        except ValueError as exc:
+            raise AdapterError(f"unsupported timing {controls['timing']!r}") from exc
 
         # Admission first: before the digests, before the scratch directory,
         # before any file is written. A denied run must not be distinguishable
@@ -651,7 +672,7 @@ class RifeNcnnAdapter:
 
             left = max(i for i in indices if i <= frame_index)
             right = min(i for i in indices if i > frame_index)
-            timestep = (frame_index - left) / (right - left)
+            timestep = timing.timestep(frame_index, left, right)
             destination = scratch / f"synth_{frame_index:04d}.png"
 
             argv = [

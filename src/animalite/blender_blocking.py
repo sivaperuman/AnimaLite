@@ -287,7 +287,9 @@ class Blocking:
             value = self.rigs[key[0]]["base"].matrix_world @ origin
         else:
             end = self.destination(key, beat["target"], visiting | {key})
-            value = origin.lerp(end, factor(beat, self.frame))
+            progress = factor(beat, self.frame)
+            value = origin.lerp(end, progress)
+            value.z += 4 * progress * (1 - progress) * beat.get("arc_height", 0)
         self.cache[key] = value
         return value
 
@@ -315,9 +317,25 @@ class Blocking:
             self.cache.clear()
 
 
+def animate_grip(fingers, held_frames, frames):
+    # Both hands hold through a transfer. Ease towards the closest held frame
+    # on either side so a quick release and re-grasp need not open fully.
+    ramp = 4
+    for frame in range(1, frames + 1):
+        distance = next(
+            (d for d in range(ramp) if frame - d in held_frames or frame + d in held_frames), ramp
+        )
+        u = 1 - distance / ramp
+        angle = 0.10 - 1.05 * u * u * (3 - 2 * u)
+        for finger in fingers:
+            finger.rotation_euler.x = angle
+            finger.keyframe_insert(data_path="rotation_euler", frame=frame)
+
+
 def bake(scene, stage, rigs, frames, film, rgba):
     props = {n: make_prop(n, p, film, rgba) for n, p in stage.get("props", {}).items()}
     block = Blocking(stage, rigs)
+    held_frames: dict[tuple[str, str], set[int]] = {}
     events: dict[int, list[Any]] = {}
     for event in stage.get("contacts", []):
         events.setdefault(event["frame"], []).append(event)
@@ -334,7 +352,11 @@ def bake(scene, stage, rigs, frames, film, rgba):
             rig["spine"].keyframe_insert(data_path="rotation_euler", frame=frame)
         bpy.context.view_layer.update()
         block.begin(frame)
+        holding = {key for key, _ in block.owners.values()}
         block.contacts(events.get(frame, []))
+        holding.update(key for key, _ in block.owners.values())
+        for key in holding:
+            held_frames.setdefault(key, set()).add(frame)
         for prop, obj in props.items():
             position(obj, block.prop_origin(prop, set()), frame)
             orient(obj, block.prop_rotation(prop), frame)
@@ -371,10 +393,6 @@ def bake(scene, stage, rigs, frames, film, rgba):
                     0.085 * size,
                     frame,
                 )
-                closed = any(owner[0] == key for owner in block.owners.values())
-                for finger in limb["fingers"]:
-                    finger.rotation_euler.x = -0.95 if closed else 0.10
-                    finger.keyframe_insert(data_path="rotation_euler", frame=frame)
             key = (name, "head")
             if key in block.active:
                 point = block.resolve(key, set())
@@ -399,4 +417,9 @@ def bake(scene, stage, rigs, frames, film, rgba):
                     eye.location.x, eye.location.z = 0.045 * d.x, 0.046 * d.z
             for eye in rig["eyes"]:
                 eye.keyframe_insert(data_path="location", frame=frame)
+    for name, rig in rigs.items():
+        for hand, _ in SIDES:
+            animate_grip(
+                rig[hand]["fingers"], held_frames.get((name, hand + "_hand"), set()), frames
+            )
     scene.frame_set(1)

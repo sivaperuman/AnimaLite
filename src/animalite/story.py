@@ -25,6 +25,7 @@ from animalite.contracts.media import P_L_FINAL_OUTPUT
 from animalite.contracts.shot import ShotIntent
 from animalite.core.service import LocalExecutionService
 from animalite.errors import ValidationRejected
+from animalite.media.cadence import AnchorTiming
 from animalite.media.probe import probe_output, validate_output
 from animalite.performance import Mouth, Stage, draw_mouths, render_stage, speech_cues
 from animalite.story_media import (
@@ -47,7 +48,7 @@ class Pose(Contract):
 class StoryShot(Contract):
     action: str = Field(min_length=1)
     seconds: int = Field(ge=1, le=6)
-    timing: Literal["linear", "ease-in-out"] = "linear"
+    timing: AnchorTiming = AnchorTiming.LINEAR
     camera: Camera = Camera()
     dialogue: list[Dialogue] = Field(default_factory=list)
     poses: list[Pose] = Field(default_factory=list, max_length=4)

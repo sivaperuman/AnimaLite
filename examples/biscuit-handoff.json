@@ -51,7 +51,7 @@
             "motion": {
               "left_hand": [
                 {"frame": 1, "end": 1, "target": {"local": [0.32, -0.07, 0.84]}},
-                {"frame": 28, "end": 43, "target": {"prop": "Biscuit", "grip": "edge"}},
+                {"frame": 28, "end": 43, "arc_height": 0.055, "target": {"prop": "Biscuit", "grip": "edge"}},
                 {"frame": 47, "end": 60, "target": {"point": [-0.31, -0.42, 1.42]}},
                 {"frame": 64, "end": 82, "target": {"point": [0.04, 0.015, 1.04]}},
                 {"frame": 103, "end": 114, "target": {"local": [0.29, -0.1, 0.87]}}
@@ -99,7 +99,7 @@
               "right_hand": [
                 {"frame": 1, "end": 1, "target": {"local": [-0.29, -0.045, 0.78]}},
                 {"frame": 72, "end": 84, "target": {"point": [-0.19, 0.015, 1.04]}},
-                {"frame": 86, "end": 91, "target": {"prop": "Biscuit", "grip": "other"}},
+                {"frame": 86, "end": 91, "arc_height": 0.018, "target": {"prop": "Biscuit", "grip": "other"}},
                 {"frame": 98, "end": 112, "target": {"point": [0.29, -0.32, 1.24]}},
                 {"frame": 118, "end": 136, "target": {"point": [0.48, -0.32, 1.56]}, "rotation": [0, -17, 0]}
               ],

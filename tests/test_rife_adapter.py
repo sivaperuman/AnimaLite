@@ -173,6 +173,17 @@ def test_unsupported_controls_are_reported(tmp_path):
     assert CodeVAL.CONTROL_UNSUPPORTED in [i.code for i in issues]
 
 
+@pytest.mark.parametrize("value", ["overshoot", 0.5, False])
+def test_invalid_rife_timing_is_rejected(tmp_path, value):
+    issues = RifeNcnnAdapter().validate(
+        RIFE_PROFILE, _anchors(tmp_path), P_L_FINAL_OUTPUT, {"timing": value}
+    )
+    assert any(
+        i.code == CodeVAL.CONTROL_VALUE_INVALID and i.field_path == "controls.timing"
+        for i in issues
+    )
+
+
 @pytest.mark.parametrize("value", ["false", "true", 1, 0, 7, 0.0])
 def test_tta_spatial_must_be_a_real_boolean(tmp_path, value):
     """B-R3. ``"false"`` is a true string; ``7`` is a true int.
@@ -655,6 +666,35 @@ def test_the_tta_control_reaches_the_command_line(tmp_path, tools, admitted, mon
     )
     list(adapter.synthesize(context))
     assert " -x" in log.read_text(), log.read_text()
+
+
+@pytest.mark.media
+@pytest.mark.parametrize(
+    ("controls", "expected"),
+    [({}, [0.25, 0.5, 0.75]), ({"timing": "ease-in-out"}, [0.15625, 0.5, 0.84375])],
+)
+def test_rife_sends_segment_timesteps_and_copies_anchors(
+    tmp_path, tools, admitted, monkeypatch, controls, expected
+):
+    log = tmp_path / "argv.log"
+    monkeypatch.setenv("ANIMALITE_TEST_LOG", str(log))
+    context, adapter = _stub_context(
+        tmp_path,
+        tools,
+        binary=_stub_binary(tmp_path, _COPYING_STUB),
+        frame_count=5,
+        controls=controls,
+    )
+    assert not any(
+        issue.field_path == "controls.timing"
+        for issue in adapter.validate(RIFE_PROFILE, context.anchors, context.output, controls)
+    )
+    frames = list(adapter.synthesize(context))
+    calls = [line.split() for line in log.read_text().splitlines() if line.startswith("ARGV:")]
+    assert [float(args[args.index("-s") + 1]) for args in calls] == expected
+    assert len(frames) == 5
+    np.testing.assert_array_equal(frames[0], context.anchor_frames[0])
+    np.testing.assert_array_equal(frames[-1], context.anchor_frames[4])
 
 
 @pytest.mark.media

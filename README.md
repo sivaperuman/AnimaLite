@@ -219,8 +219,10 @@ the driver riding a bicycle.” The development session performs the following s
 python -m animalite story-render storyboard.json --profile classical-warp-baseline
 ```
 
-With the classical renderer, optional `ease-in-out` timing starts and lands each
-movement gently. Omit it for linear timing.
+For illustrated shots, optional `ease-in-out` timing starts and lands each
+movement gently between successive poses. The classical and RIFE adapters
+use the same curve. RIFE execution requires an approved runtime and weights
+for the requested purpose. Omit timing for the default linear spacing.
 
 The command fits images into 640×360 without stretching, renders each shot
 through the execution service and joins them with hard cuts into one
@@ -378,10 +380,11 @@ default smooth easing or `"ease": "linear"`.
 | --- | --- |
 | `body` | Set a pelvis `offset` from rest in actor-local units, a sideways spine `lean`, and a torso `turn` in degrees. |
 | `left_foot`, `right_foot` | Move an ankle by an offset from its planted position. Use two beats to lift and land a foot. Grounded feet stay in place as the pelvis moves. |
-| `left_hand`, `right_hand` | Reach a `target` and optionally set wrist `rotation` in world XYZ degrees. Elbows and knees use a two-segment IK solve. Left and right belong to the actor. |
+| `left_hand`, `right_hand` | Reach a `target`. Optional `arc_height` lifts the wrist above the straight path in world Z, in scene units, peaking halfway through the movement. The default is zero. Optional `rotation` sets the wrist in world XYZ degrees. Left and right belong to the actor. |
 | `eyes`, `head` | Give each a target and its own timing. To lead a reaction with the eyes, start the head beat several frames later. |
 
-A `target` can specify a world `point`, an actor-relative `local` point, an
+Elbows and knees use a two-segment IK solve. A `target` can specify a world
+`point`, an actor-relative `local` point, an
 `actor` to look at, or a `prop` with an optional named `grip`. An optional
 world-space `offset` adjusts the aim. Completed reaches and looks keep
 tracking a moving target. Facial acting and spoken mouth cues still work.
@@ -398,7 +401,9 @@ two hands meet opposite edges of the biscuit:
 At frame 91 a `handoff` names **Max's receiving hand** and the `other` grip.
 The current owner supplies the donor. The prop keeps its world pose at the
 transfer and subsequently follows the receiving wrist's translation and
-rotation. A `release` leaves the prop at its last world pose. A hand holds one
+rotation. Fingers ease closed over the four frame intervals before contact and
+open over four intervals after release. Both hands are closed on the transfer
+frame. A `release` leaves the prop at its last world pose. A hand holds one
 prop at a time. Schedule the reach to arrive on the contact frame. The renderer
 rejects missed grips (over 0.002 scene units), unreachable limbs and circular
 hand/prop targets with the offending frame. This workflow uses authored contacts.
