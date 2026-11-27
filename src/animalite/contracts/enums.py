@@ -47,6 +47,10 @@ class FailureCategory(StrEnum):
     """Why an attempt did not publish output. Recorded in structured logs."""
 
     VALIDATION_REJECTED = "validation_rejected"
+    #: A learned profile was executed without a recorded, approved admission
+    #: decision covering its artifacts and purpose. Separate from
+    #: ``validation_rejected`` so a rights block is never read as a bad request.
+    ADMISSION_DENIED = "admission_denied"
     UNSUPPORTED_CAPABILITY = "unsupported_capability"
     ADAPTER_ERROR = "adapter_error"
     ENCODER_ERROR = "encoder_error"

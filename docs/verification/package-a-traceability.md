@@ -101,11 +101,15 @@ Status values below:
 | CR-006 | `ResourceEstimate` is device-class agnostic; accelerator fields optional | Implementation evidence only |
 | CR-010 | Pinned settings + `EnvironmentRecord` (commit, dirty flag, tool identities, lock digest, CPU/SIMD flags, thread env) | Partial — cross-host pixel-equivalence comparison not implemented |
 | CR-025 | none — this is the gate Package A exists to prepare for | **No** |
+| CR-024 | Execution admission records (`ExecutionAdmission`) bind a decision to exact artifact digests and permitted purposes; an `approved` record without reviewer, reference, date, purposes and digests is refused by the schema. The committed dossier is `pending` and a test asserts nothing approved is ever committed. | Implementation evidence only — the **decision** is owner/legal (D-06) |
 | MR-010 | Validation runs before any encode; rejections are recorded as failed attempts | Implementation evidence only |
 | MR-013 | Thread budget, memory method, storage and stage timings recorded per attempt | Partial — setup/attempt/cost fields await real profiles |
 | MR-015 | No network client exists in the package; `DeviceEvidence.network_calls_observed_status` is `pending`, not asserted | **No** — honest `pending`, not a claim |
 | MR-016 | `EngineProfile` declares class, tiers, required assets and CPU-only guarantee | Implementation evidence only |
-| MR-018 | **Structurally cannot be satisfied here.** Three independent mechanisms prevent a false claim (DEC-0008) | **No** |
+| MR-018 | Package B integrates a learned model that synthesizes a moving subject (MAE 0.187 vs ground truth) where a cross-fade does not (1.577), asserted in `tests/test_rife_adapter.py` — recorded before execution admission was enforced, and not reproducible without a recorded decision (DEC-0016). That measurement shows the output is not a blend; it does **not** on its own identify the mechanism or establish an advantage over a non-learned method. The fixture adapter is structurally barred (DEC-0008); `classical-warp-baseline` (DEC-0015) is barred too and exists as the non-learned control, to be compared fairly on the same inputs rather than beaten by construction. | **No.** A non-blend result is evidenced; the *requirement* needs the locked sample on the D-02-approved host under AT-055/AT-056, and a like-for-like comparison against the baseline. |
+| MR-015 | Learned inference runs with explicit `-g -1`, and the thread allocation is pinned in argv and the child environment (DEC-0017). Device evidence is `measured` **only** on invocations that reported a Vulkan initialisation failure — positive evidence for those invocations; otherwise the configuration is observed and the status stays `pending`. A zero-invocation request claims nothing at all. `network_calls_observed_status` remains `pending`. | Partial — device evidence is measured only where something measured it; offline behaviour still unevidenced |
+| MR-012 | Code, runtime and **weight** licences recorded separately from primary sources; the conversion chain is `pending`/`use_eligible=false` (DEC-0013) | No — deliberately unresolved, and it blocks qualification |
+| C-04 | Two independent mechanisms: the evaluator blocks *qualification* on `ELIG-LICENCE-NOT-CLEARED` / `ELIG-LICENCE-MISSING`, and `animalite.admission` blocks *execution* of a learned profile without a recorded, artifact- and purpose-bound decision (DEC-0016) — before any invocation, in validation and again in the adapter. Missing, pending and rejected all block; there is no bypass. | Implementation evidence only |
 | NFR-002 | Failed attempts retain diagnostics; retry creates a new linked attempt | Implementation evidence only |
 | NFR-003 | Anchors, outputs, settings and the ledger are all content-hashed | Implementation evidence only |
 | NFR-013 | Structured JSONL logs per attempt with stage, duration, failure category | Implementation evidence only |
@@ -120,8 +124,9 @@ Status values below:
 
 | Prerequisite | State |
 | --- | --- |
-| A learned CPU temporal adapter with participating learned synthesis | Not implemented (Package B) |
-| Verified upstream code + weight licences for that adapter | Not started (LIC-05) |
+| A learned CPU temporal adapter with participating learned synthesis | **Implemented** (`rife-ncnn-v4.6-cpu`), participation measured |
+| A classical warp/flow comparator (§6.0) | **Implemented** (`classical-warp-baseline`); reconstructs a known 24px translation 15.6x better than a cross-fade, and cannot be marked qualification-eligible (DEC-0015). Not yet run head-to-head against the learned candidate as a measured sample. |
+| Verified upstream code + weight licences for that adapter | Evidence gathered and consolidated into one artifact-specific dossier (`docs/licensing/admissions/rife-ncnn-20221029.json`); **disposition unresolved** (DEC-0013, LIC-05), and now *enforced* rather than noted — the learned path does not execute without a recorded decision (DEC-0016) |
 | D-02-approved P-L host with recorded SKU, power and thermal policy | Not approved |
 | D-02-signed §12.0 targets | Not signed — targets remain proposed |
 | Frozen 12-clip sample with locked hashes, indices and rights records | Not frozen (LIC-07) |
@@ -129,9 +134,17 @@ Status values below:
 | Four fresh input packs; four unsupported cases; offline rerun; device trace | Not produced |
 
 Every one of these is checked by `bench/evaluate.py`, and each missing item
-produces a specific blocking finding. Running the harness today against the
-fixtures yields `verdict: not_eligible` with 19 blocking findings — see
-`docs/verified-commands.md`.
+produces a specific blocking finding. Running the harness today yields
+`verdict: not_eligible` for **both** profiles — for the fixture because it has no
+learned component, and for `rife-ncnn-v4.6-cpu` because of the licence position,
+the unapproved host and the unlocked dataset.
+
+Since PR-2 the learned profile does not reach the evaluator at all on a fresh
+checkout: execution admission blocks it at validation (DEC-0016), and a
+benchmark run declares the `benchmark` purpose, which is a separate permission
+from local research. The qualification gate is unchanged and still
+non-overridable; admission is a second, earlier barrier, not a replacement for
+it. See `docs/verified-commands.md`.
 
 ## Phase gate position
 

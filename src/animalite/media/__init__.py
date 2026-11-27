@@ -12,6 +12,13 @@ from animalite.media.cadence import (
 from animalite.media.decode import decode_image_rgb24
 from animalite.media.encode import EncodeOutcome, encode_delivery_stream, encoder_argv
 from animalite.media.ffmpeg import FFmpegTools, probe_tool
+from animalite.media.flow import (
+    estimate_block_flow,
+    interpolate_motion_compensated,
+    upsample_flow,
+    warp_bilinear,
+)
+from animalite.media.image import write_png_rgb24
 from animalite.media.probe import probe_output, validate_output
 
 __all__ = [
@@ -22,10 +29,15 @@ __all__ = [
     "delivery_indices_for_animation_index",
     "encode_delivery_stream",
     "encoder_argv",
+    "estimate_block_flow",
     "exact_duration_seconds",
     "expand_to_delivery",
     "frame_accounting",
+    "interpolate_motion_compensated",
     "probe_output",
     "probe_tool",
+    "upsample_flow",
     "validate_output",
+    "warp_bilinear",
+    "write_png_rgb24",
 ]

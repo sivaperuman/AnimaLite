@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import math
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,8 +23,8 @@ from numpy.typing import NDArray
 
 from animalite.contracts.assets import AnchorSet, AssetRef, InputAnchor
 from animalite.contracts.base import sha256_file
-from animalite.errors import AdapterError
 from animalite.media.ffmpeg import FFmpegTools
+from animalite.media.image import write_png_rgb24
 
 __all__ = ["FIXTURE_CLIPS", "FixtureClip", "generate_clip", "write_anchor_set"]
 
@@ -122,54 +121,9 @@ def _render_anchor(
     return frame
 
 
-def _encode_png(
-    tools: FFmpegTools, frame: NDArray[np.uint8], destination: Path, *, timeout: float = 60.0
-) -> None:
-    """Write one RGB24 frame to a PNG via the installed FFmpeg."""
-    height, width, _ = frame.shape
-    argv = [
-        tools.ffmpeg_path,
-        "-hide_banner",
-        "-nostdin",
-        "-loglevel",
-        "error",
-        "-y",
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "rgb24",
-        "-s",
-        f"{width}x{height}",
-        "-i",
-        "-",
-        "-frames:v",
-        "1",
-        "-compression_level",
-        "9",
-        "-pred",
-        "none",
-        "-f",
-        "image2",
-        "-c:v",
-        "png",
-        str(destination),
-    ]
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        completed = subprocess.run(  # noqa: S603 - argv list, no shell
-            argv,
-            input=frame.tobytes(),
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise AdapterError(f"writing fixture anchor {destination} timed out") from exc
-    if completed.returncode != 0 or not destination.exists():
-        raise AdapterError(
-            f"failed to write fixture anchor {destination}: exit {completed.returncode}; "
-            f"{completed.stderr.decode('utf-8', 'replace').strip()[-500:]}"
-        )
+#: Per-image bound for fixture generation. Not a job deadline: the generator
+#: runs outside the execution service, so it owns this allowance explicitly.
+FIXTURE_WRITE_TIMEOUT_SECONDS = 60.0
 
 
 def generate_clip(
@@ -187,7 +141,10 @@ def generate_clip(
     for animation_index in clip.anchor_indices:
         frame = _render_anchor(clip, animation_index, width, height)
         path = out_dir / f"{clip.clip_id}_a{animation_index:03d}.png"
-        _encode_png(resolved, frame, path)
+        # An offline generator has no job deadline, so it states its own
+        # bound rather than inheriting one: a stalled encoder must not hang
+        # a fixture build indefinitely.
+        write_png_rgb24(resolved, frame, path, timeout=FIXTURE_WRITE_TIMEOUT_SECONDS)
         anchors.append(
             InputAnchor(
                 anchor_id=f"{clip.clip_id}#{animation_index:03d}",

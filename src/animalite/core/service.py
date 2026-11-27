@@ -40,7 +40,7 @@ from animalite.contracts.job import (
     RenderRequest,
 )
 from animalite.contracts.media import FrameAccounting
-from animalite.contracts.profile import Capabilities, EngineProfile
+from animalite.contracts.profile import Capabilities, EngineProfile, ThreadBudget
 from animalite.contracts.results import (
     DeviceEvidence,
     MemoryObservation,
@@ -84,6 +84,55 @@ class _Job:
         self.thread: threading.Thread | None = None
         self.stage: Stage | None = None
         self.lock = threading.Lock()
+
+
+def _device_evidence_before_adapter(profile: EngineProfile | None) -> DeviceEvidence:
+    """The device evidence an attempt carries until its adapter reports.
+
+    Three cases, kept apart because collapsing them produced a false record:
+    an attempt that never reached an adapter, a profile that runs no inference
+    runtime at all, and a learned profile whose adapter has not (yet) reported.
+    The last one is *pending*, never ``not_applicable``: a failed learned
+    attempt used to inherit the fixture path's "runs no inference runtime" note.
+    """
+    shared = [
+        "The encoder is invoked with software codecs only; no hardware "
+        "acceleration flag is passed.",
+        "Network isolation is not asserted by this package; AT-056's offline "
+        "rerun is a Package C activity.",
+    ]
+    if profile is None:
+        return DeviceEvidence(
+            inference_device_status=EvidenceStatus.PENDING,
+            inference_device=None,
+            network_calls_observed_status=EvidenceStatus.PENDING,
+            notes=["The attempt did not reach an adapter, so no device was observed.", *shared],
+        )
+    if not profile.learned_temporal_participation:
+        return DeviceEvidence(
+            inference_device_status=EvidenceStatus.NOT_APPLICABLE,
+            inference_device=None,
+            network_calls_observed_status=EvidenceStatus.PENDING,
+            notes=[
+                f"Profile {profile.profile_id!r} declares no learned temporal "
+                "participation and executes no inference runtime, so there is no "
+                "CPU-only inference claim to evidence (MR-015 remains open for "
+                "the learned path).",
+                *shared,
+            ],
+        )
+    return DeviceEvidence(
+        inference_device_status=EvidenceStatus.PENDING,
+        inference_device=None,
+        network_calls_observed_status=EvidenceStatus.PENDING,
+        notes=[
+            f"Profile {profile.profile_id!r} declares learned temporal "
+            "participation, and its adapter recorded no device observation for "
+            "this attempt. Absent evidence stays pending; it is not a CPU-only "
+            "claim and not a not-applicable one.",
+            *shared,
+        ],
+    )
 
 
 class LocalExecutionService:
@@ -322,23 +371,15 @@ class LocalExecutionService:
         stages: list[StageTiming] = []
         survivor_groups: list[int] = []
         notes: list[str] = []
+        context: AdapterContext | None = None
         sampler = MemorySampler()
         logger = AttemptLogger(job.record.attempt_id, dirs.log_path, console=self._logger)
-        device_evidence = DeviceEvidence(
-            inference_device_status=EvidenceStatus.NOT_APPLICABLE,
-            inference_device=None,
-            encoder_device="cpu",
-            hardware_acceleration_requested=False,
-            network_calls_observed_status=EvidenceStatus.PENDING,
-            notes=[
-                "Package A runs no inference runtime, so there is no CPU-only "
-                "inference claim to evidence here (MR-015 remains open).",
-                "The encoder is invoked with software codecs only; no hardware "
-                "acceleration flag is passed.",
-                "Network isolation is not asserted by this package; AT-056's offline "
-                "rerun is a Package C activity.",
-            ],
-        )
+        # Replaced with a profile-specific default as soon as the profile is
+        # resolved. Until then the attempt has not reached an adapter, and that
+        # is what this says -- the previous unconditional "runs no inference
+        # runtime" note was copied onto failed *learned* attempts, asserting
+        # something about a run that had launched a model.
+        device_evidence = _device_evidence_before_adapter(None)
         deadline = time.monotonic() + request.timeout_seconds
 
         def remaining() -> float:
@@ -383,10 +424,14 @@ class LocalExecutionService:
 
             profile = self.registry.profile(request.engine_profile_id)
             adapter = self.registry.adapter_for(profile)
+            device_evidence = _device_evidence_before_adapter(profile)
 
             with timed(Stage.DECODE_ANCHORS):
                 anchor_frames = self._decode_anchors(
-                    request, remaining(), cancel=job.cancel_event.is_set
+                    request,
+                    remaining(),
+                    cancel=job.cancel_event.is_set,
+                    thread_budget=profile.thread_budget,
                 )
 
             self._check_cancelled(job)
@@ -395,18 +440,34 @@ class LocalExecutionService:
             produced = dirs.work / OUTPUT_FILENAME
             encoder_stderr = dirs.work / "encoder.stderr.log"
 
-            with timed(Stage.TEMPORAL_SYNTHESIS):
-                context = AdapterContext(
-                    anchor_frames=anchor_frames,
-                    output=request.output,
-                    anchors=request.anchors,
-                    profile=profile,
-                    controls=profile.effective_controls(request.controls),
-                    cancel_requested=job.cancel_event,
-                )
-                frames = self._counted_frames(job, adapter.synthesize(context), request)
+            context = AdapterContext(
+                anchor_frames=anchor_frames,
+                output=request.output,
+                anchors=request.anchors,
+                profile=profile,
+                scratch_dir=dirs.work,
+                tools=self.tools,
+                controls=profile.effective_controls(request.controls),
+                cancel_requested=job.cancel_event,
+                deadline=deadline,
+                cancel=job.cancel_event.is_set,
+                purpose=request.execution_purpose,
+            )
+            # The adapter is a generator consumed by the encoder writer, so the
+            # two stages interleave. `synthesis_seconds` accumulates the time
+            # actually spent inside the adapter, and it is subtracted from the
+            # encode stage below -- otherwise every second of model inference
+            # would be reported as encoder time (NFR-028: no stage may be
+            # misattributed or hidden).
+            synthesis_seconds = [0.0]
+            frames = self._counted_frames(
+                job, adapter.synthesize(context), request, synthesis_seconds
+            )
 
-            with timed(Stage.ENCODE):
+            job.stage = Stage.ENCODE
+            encode_started = time.perf_counter()
+            logger.emit("stage.start", stage=Stage.ENCODE.value)
+            try:
                 encoded = encode_delivery_stream(
                     self.tools,
                     expand_to_delivery(frames, request.output),
@@ -417,19 +478,53 @@ class LocalExecutionService:
                     stderr_path=encoder_stderr,
                     cancel=job.cancel_event.is_set,
                 )
-            if encoded.survivors:
-                # A leaked encoder is a failed attempt, not a note on a
-                # successful one. It still holds CPU, memory and descriptors, so
-                # continuing to probe and publish would report a clean run that
-                # was not clean.
-                raise CleanupFailed(
-                    f"encoder process group(s) {list(encoded.survivors)} were still "
-                    "alive after teardown; the cleanup guarantee did not hold, so "
-                    "this attempt publishes nothing",
-                    survivors=encoded.survivors,
+                if encoded.survivors:
+                    # A leaked encoder is a failed attempt, not a note on a
+                    # successful one. It still holds CPU, memory and descriptors,
+                    # so continuing to probe and publish would report a clean run
+                    # that was not clean. Raised inside the try so the finally
+                    # below still attributes the synthesis/encode split.
+                    raise CleanupFailed(
+                        f"encoder process group(s) {list(encoded.survivors)} were still "
+                        "alive after teardown; the cleanup guarantee did not hold, so "
+                        "this attempt publishes nothing",
+                        survivors=encoded.survivors,
+                    )
+            finally:
+                pipeline_seconds = time.perf_counter() - encode_started
+                stages.append(
+                    StageTiming(
+                        stage=Stage.TEMPORAL_SYNTHESIS,
+                        wall_seconds=round(synthesis_seconds[0], 6),
+                        inside_timing_boundary=True,
+                        detail="measured inside the adapter generator",
+                    )
+                )
+                stages.append(
+                    StageTiming(
+                        stage=Stage.ENCODE,
+                        wall_seconds=round(max(0.0, pipeline_seconds - synthesis_seconds[0]), 6),
+                        inside_timing_boundary=True,
+                        detail=(
+                            "streaming encode, exclusive of adapter time pulled "
+                            "through the same pipeline"
+                        ),
+                    )
+                )
+                logger.emit(
+                    "stage.end",
+                    stage=Stage.ENCODE.value,
+                    duration_seconds=round(pipeline_seconds, 6),
+                    synthesis_seconds=round(synthesis_seconds[0], 6),
                 )
 
             self._check_cancelled(job)
+
+            if context.device_evidence is not None:
+                device_evidence = context.device_evidence
+            for note in context.notes:
+                logger.emit("adapter.note", note=note)
+            notes.extend(context.notes)
 
             with timed(Stage.VALIDATE_OUTPUT):
                 probe = probe_output(
@@ -450,10 +545,7 @@ class LocalExecutionService:
                     probe=probe,
                     settings_digest=job.record.settings_digest,
                     is_qualifying_evidence=False,
-                    non_qualifying_reason=(
-                        profile.non_qualifying_reason
-                        or "no learned temporal model is integrated in this package"
-                    ),
+                    non_qualifying_reason=_non_qualifying_reason(profile),
                 )
 
             memory = sampler.observe()
@@ -479,6 +571,15 @@ class LocalExecutionService:
             return
 
         except BaseException as exc:
+            # Whatever the adapter observed before it failed is still evidence,
+            # and a failed learned call is exactly when the device and argv
+            # notes matter most. Copying them only on success left a failed
+            # attempt asserting "no inference runtime" and
+            # inference_device_status=not_applicable.
+            if context is not None:
+                if context.device_evidence is not None:
+                    device_evidence = context.device_evidence
+                notes.extend(context.notes)
             # Cleanup evidence rides on the exception, because a raised error
             # cannot return a capture result -- and timeout and cancellation are
             # exactly where a leaked process is most likely.
@@ -574,6 +675,7 @@ class LocalExecutionService:
         budget_seconds: float,
         *,
         cancel: Callable[[], bool] | None = None,
+        thread_budget: ThreadBudget | None = None,
     ) -> dict[int, NDArray[np.uint8]]:
         """Decode every anchor within the *job* deadline, not a private one.
 
@@ -596,6 +698,7 @@ class LocalExecutionService:
                 height=request.output.height,
                 timeout=remaining,
                 cancel=cancel,
+                thread_budget=thread_budget,
             )
         return frames
 
@@ -604,6 +707,7 @@ class LocalExecutionService:
         job: _Job,
         frames: Iterator[NDArray[np.uint8]],
         request: RenderRequest,
+        synthesis_seconds: list[float] | None = None,
     ) -> Iterator[bytes]:
         """Adapt adapter output to encoder input, checking count and geometry.
 
@@ -613,7 +717,19 @@ class LocalExecutionService:
         expected_shape = (request.output.height, request.output.width, 3)
         total = request.output.animation_frame_count
         produced = 0
-        for frame in frames:
+        sink = synthesis_seconds if synthesis_seconds is not None else [0.0]
+        while True:
+            started = time.perf_counter()
+            try:
+                frame = next(frames)
+            except StopIteration:
+                break
+            finally:
+                # Every outcome, not only success: an inference that spent 0.3s
+                # and then raised was charged to *encode*, because the elapsed
+                # time was added after the call returned. A failure's cost
+                # belongs to the stage that incurred it.
+                sink[0] += time.perf_counter() - started
             self._check_cancelled(job)
             if frame.shape != expected_shape or frame.dtype != np.uint8:
                 raise AdapterError(
@@ -630,6 +746,37 @@ class LocalExecutionService:
             raise AdapterError(
                 f"adapter yielded {produced} animation frames; the output contract requires {total}"
             )
+
+
+def _non_qualifying_reason(profile: EngineProfile) -> str:
+    """Why this artifact is not qualification evidence.
+
+    A single render is never qualification evidence, but the *reason* differs
+    and must be stated accurately. For a non-learned profile the profile itself
+    is disqualifying. For a learned, qualification-eligible profile the profile
+    is fine and the missing pieces are the protocol ones -- saying "no learned
+    model is integrated" there would be false.
+    """
+    if not profile.qualification_eligible:
+        return (
+            profile.non_qualifying_reason
+            or f"profile {profile.profile_id!r} is not qualification-eligible"
+        )
+
+    reasons = [
+        f"profile {profile.profile_id!r} is qualification-eligible, but a single "
+        "render is not qualification evidence: AT-055/AT-056 require the locked "
+        "12-clip sample on the D-02-approved P-L host, complete warm/cold/preview "
+        "distributions and two-reviewer quality evidence, evaluated together by "
+        "`animalite benchmark`"
+    ]
+    evaluation = profile.license_evaluation
+    if evaluation is not None and not evaluation.use_eligible:
+        reasons.append(
+            f"licence evaluation {evaluation.evaluation_id} is "
+            f"{evaluation.policy_state!r} (use_eligible=False)"
+        )
+    return "; ".join(reasons)
 
 
 class _StageTimer:
